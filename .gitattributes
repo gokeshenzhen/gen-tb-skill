@@ -1,0 +1,4 @@
+# Exclude fixtures with restrictive upstream licenses from the release
+# tarball produced by `git archive`. Clones keep them for development /
+# regression runs.
+evals/fixtures/uart16550/ export-ignore

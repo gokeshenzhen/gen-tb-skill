@@ -1,0 +1,9 @@
+{
+  "must_pass": [
+    {"case": "test_sanity",     "criteria": ["compile_ok", "elaborate_ok", "no_uvm_fatal", "no_uvm_error"]},
+    {"case": "reg_access_test", "criteria": ["compile_ok", "no_uvm_fatal", "no_uvm_error"]}
+  ],
+  "may_skip_if_no_ref_model": [],
+  "max_compile_fix_attempts": 5,
+  "max_unresolved_items": 3
+}

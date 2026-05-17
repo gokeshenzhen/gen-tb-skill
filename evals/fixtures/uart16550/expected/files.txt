@@ -1,0 +1,22 @@
+# Minimum set of files gen-tb must produce for this fixture to count as
+# a successful run. Paths are relative to the generated project root.
+# Each line: <path>[<TAB><kind>] where kind is one of: file | dir | exists | nonempty
+# Default kind: nonempty.
+
+.prj_top                                exists
+script/makefile                         nonempty
+script/setup.sh                         nonempty
+script/check_env.sh                     exists
+rtl/design.f                            nonempty
+top/uart_tb_top.sv                      nonempty
+tb/uart_env.sv                          nonempty
+tb/uart_sb.sv                           nonempty
+tb/uart_env_config.sv                   nonempty
+tb/apb_agt_top/apb_agent.sv             nonempty
+tb/apb_agt_top/apb_driver.sv            nonempty
+tb/apb_agt_top/apb_monitor.sv           nonempty
+tb/ral/uart_reg_block.sv                nonempty
+test/uart_pkg.sv                        nonempty
+test/uart_test_lib.sv                   nonempty
+test/sv_list                            nonempty
+work                                    dir

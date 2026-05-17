@@ -1,0 +1,28 @@
+The OpenCores uart16550 RTL files (rtl/*.v in this directory, excluding
+uart_apb_wrap.v) are distributed under the GNU Lesser General Public
+License, Version 2.1 or later, as stated in the header of each file:
+
+    Copyright (C) 2000, 2001 Authors
+
+    This source file is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public License
+    as published by the Free Software Foundation; either version 2.1
+    of the License, or (at your option) any later version.
+
+    This source is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this source; if not, download it from
+    http://www.opencores.org/lgpl.shtml
+
+The full LGPL-2.1 text is available at:
+    https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+uart_apb_wrap.v (in rtl/) is Apache-2.0; see the SPDX header in that
+file.
+
+This directory is bundled with gen-tb solely as a regression-test input
+and is excluded from the release tarball (see top-level .gitattributes).
