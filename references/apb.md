@@ -3,11 +3,10 @@
 > Loaded during Phase 4 when the user has not opted to reuse an
 > external APB VIP. Defines the seven-file UVM agent gen-tb generates.
 >
-> **Status: v1.2 — partial in v1.1.** v1.1 ships `tb_api` (the
-> DE-persona surface) but defers full UVM agent generation. DV-persona
-> work that needs sequences/sequencers should use the placeholder
-> agent stub and extend it manually until v1.2 lands. See "What v1.1
-> provides" below.
+> **Status: v1.2 implemented for generated APB agents.** v1.1 shipped
+> only `tb_api` (the DE-persona surface); v1.2 adds the full seven-file
+> UVM agent for fresh generation. External VIP reuse remains a separate
+> follow-up path.
 
 ## Why an agent matters even with tb_api
 
@@ -151,30 +150,29 @@ class apb_agent extends uvm_agent;
 endclass
 ```
 
-## What v1.1 provides today
+## What v1.2 provides today
 
-`scripts/scaffold.py` v1.1 emits `tb_api` + the test pkg + `apb_if`.
-It does **not** emit the seven-file agent. DV-persona work currently
-needs to:
+`scripts/scaffold.py` now emits:
 
-1. Use `tb_api::write/read` directly in `uvm_test`s (the v1.1 sanity
-   and reg_access tests are examples)
-2. For sequencer/sequence work, hand-author the agent files using
-   the templates above
-3. When v1.2 ships, scaffold.py will emit the agent in one go and
-   migrate existing tests transparently (the test-side API stays
-   `tb_api`)
+1. `tb_api` + `apb_if`
+2. the seven-file `tb/apb_agt_top/` tree above
+3. `apb_agt_pkg`, imported by `test/<ip>_pkg.sv`
+4. `<ip>_random_seq_test`, which runs 100 sequencer-driven APB
+   transactions and then reuses the same register-read helper as
+   `reg_access_test`
 
 ## When to generate the agent vs reuse an existing VIP
 
 | User situation | gen-tb action |
 |---|---|
 | `apb_vip_source: generate_fresh` | emit the 7 files above (v1.2) |
-| `apb_vip_source: reuse_my_vip` + path | scan VIP for `*_pkg.sv` / `*_agent.sv`; generate a thin shim that wires user's agent into our env; do NOT emit the 7 files |
+| `apb_vip_source: reuse_my_vip` + path | planned external-VIP path: scan VIP for `*_pkg.sv` / `*_agent.sv`; generate a thin shim that wires user's agent into our env; do NOT emit the 7 files |
 | (silent on intake) | ask via AskUserQuestion before defaulting |
 
-The reuse path is documented separately when v1.2 ships, in
-`references/apb_external_vip.md`.
+The generated-agent path is implemented in v1.2. The external reuse
+path is intentionally still separate work; until `references/apb_external_vip.md`
+exists, `reuse_my_vip` is a design contract rather than scaffold.py
+behavior.
 
 ## Connection to RAL
 

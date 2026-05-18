@@ -9,6 +9,13 @@ script/design.f                            nonempty
 script/tb.f                                nonempty
 top/uart16550_tb_top.sv                    nonempty
 tb/apb_if.sv                               nonempty
+tb/apb_agt_top/apb_agent.sv                nonempty
+tb/apb_agt_top/apb_agt_config.sv           nonempty
+tb/apb_agt_top/apb_trans.sv                nonempty
+tb/apb_agt_top/apb_driver.sv               nonempty
+tb/apb_agt_top/apb_monitor.sv              nonempty
+tb/apb_agt_top/apb_sequencer.sv            nonempty
+tb/apb_agt_top/apb_sequence.sv             nonempty
 tb/tb_api/tb_api_pkg.sv                    nonempty
 tb/tb_api/tb_api_primitives.svh            nonempty
 tb/ral/uart16550_reg_block.sv              nonempty

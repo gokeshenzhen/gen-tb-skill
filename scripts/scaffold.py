@@ -16,10 +16,13 @@ Writes:
     script/{makefile, setup.sh, check_env.sh, design.f, tb.f}
     top/<ip>_tb_top.sv
     tb/apb_if.sv
+    tb/apb_agt_top/{apb_agent.sv, apb_agt_config.sv, apb_trans.sv,
+                    apb_driver.sv, apb_monitor.sv, apb_sequencer.sv,
+                    apb_sequence.sv}
     tb/tb_api/{tb_api_pkg.sv, tb_api_primitives.svh}
     tb/dpi/{<ip>_ref_pkg.sv, <ip>_dpi_proto.h}     # if c_dpi
     tb/ral/<ip>_reg_block.sv                        # basic version
-    test/<ip>_pkg.sv (sanity + reg_access + smoke)
+    test/<ip>_pkg.sv (sanity + reg_access + random_seq + smoke)
     test/sv_list
     work/_gen_audit/scaffold_audit.json
 
@@ -27,9 +30,9 @@ Symlink guard: any write target whose realpath escapes ip_root is
 refused with a non-zero exit and a message. No writes are performed
 if any target fails the guard (atomic).
 
-This file is the v1.1 first-working-draft; corner cases (multi-clock,
-RAL aliasing, py_dpi) are stubbed with TODO comments and a non-fatal
-warning printed to stderr.
+This file is the v1.2 first-working-draft for APB agent generation;
+corner cases (multi-clock, RAL aliasing, py_dpi, external VIP reuse)
+are still stubbed with TODO comments.
 """
 
 from __future__ import annotations
@@ -244,12 +247,14 @@ def emit_tb_f(ip: str, has_dpi: bool) -> str:
     top_root = "$PROJ_DIR/top"
     lines = [
         f"+incdir+{tb_root}",
+        f"+incdir+{tb_root}/apb_agt_top",
         f"+incdir+{tb_root}/tb_api",
         f"+incdir+{tb_root}/ral",
         f"+incdir+{test_root}",
         f"+incdir+{top_root}",
         f"{tb_root}/apb_if.sv",
         f"{tb_root}/tb_api/tb_api_pkg.sv",
+        f"{tb_root}/apb_agt_top/apb_agent.sv",
         f"{tb_root}/ral/{ip}_reg_block.sv",
     ]
     if has_dpi:
@@ -345,7 +350,7 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
 
             // ---- UVM entry ----
             initial begin
-                uvm_config_db#(virtual apb_if)::set(null, "*", "apb_vif", apb);
+                uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
                 tb_api::set_vif(apb);
                 run_test();
             end
@@ -467,6 +472,196 @@ def emit_tb_api_primitives() -> str:
         """)
 
 
+def emit_apb_agent_pkg() -> str:
+    return textwrap.dedent("""\
+        `ifndef APB_AGENT_SV
+        `define APB_AGENT_SV
+        package apb_agt_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            `include "uvm_macros.svh"
+
+            `include "apb_agt_config.sv"
+            `include "apb_trans.sv"
+            `include "apb_sequencer.sv"
+            `include "apb_driver.sv"
+            `include "apb_monitor.sv"
+            `include "apb_sequence.sv"
+
+            class apb_agent extends uvm_agent;
+                `uvm_component_utils(apb_agent)
+                apb_driver     drv;
+                apb_monitor    mon;
+                apb_sequencer  sqr;
+                apb_agt_config cfg;
+
+                function new(string name, uvm_component parent = null);
+                    super.new(name, parent);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    if (!uvm_config_db#(apb_agt_config)::get(this, "", "cfg", cfg))
+                        `uvm_fatal("CFG", "apb_agt_config missing")
+                    if (cfg.vif != null)
+                        uvm_config_db#(vif_t)::set(this, "*", "apb_vif", cfg.vif);
+                    mon = apb_monitor::type_id::create("mon", this);
+                    if (cfg.is_active == UVM_ACTIVE) begin
+                        drv = apb_driver::type_id::create("drv", this);
+                        sqr = apb_sequencer::type_id::create("sqr", this);
+                    end
+                endfunction
+
+                function void connect_phase(uvm_phase phase);
+                    super.connect_phase(phase);
+                    if (cfg.is_active == UVM_ACTIVE)
+                        drv.seq_item_port.connect(sqr.seq_item_export);
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
+def emit_apb_agt_config() -> str:
+    return textwrap.dedent("""\
+        class apb_agt_config extends uvm_object;
+            `uvm_object_utils(apb_agt_config)
+            uvm_active_passive_enum is_active = UVM_ACTIVE;
+            vif_t vif;
+
+            function new(string name = "apb_agt_config");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_apb_trans() -> str:
+    return textwrap.dedent("""\
+        class apb_trans extends uvm_sequence_item;
+            rand logic [ADDR_W-1:0] addr;
+            rand logic [DATA_W-1:0] data;
+            rand bit                write;
+            logic [DATA_W-1:0]      rdata;
+            bit                     slverr;
+
+            `uvm_object_utils_begin(apb_trans)
+                `uvm_field_int(addr,   UVM_ALL_ON)
+                `uvm_field_int(data,   UVM_ALL_ON)
+                `uvm_field_int(write,  UVM_ALL_ON)
+                `uvm_field_int(rdata,  UVM_ALL_ON | UVM_NOCOMPARE)
+                `uvm_field_int(slverr, UVM_ALL_ON | UVM_NOCOMPARE)
+            `uvm_object_utils_end
+
+            function new(string name = "apb_trans");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_apb_sequencer() -> str:
+    return textwrap.dedent("""\
+        typedef uvm_sequencer #(apb_trans) apb_sequencer;
+        """)
+
+
+def emit_apb_driver() -> str:
+    return textwrap.dedent("""\
+        class apb_driver extends uvm_driver #(apb_trans);
+            `uvm_component_utils(apb_driver)
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "apb_vif", vif))
+                    `uvm_fatal("CFG", "apb_vif missing")
+                tb_api::set_vif(vif);
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                apb_trans tr;
+                forever begin
+                    seq_item_port.get_next_item(tr);
+                    if (tr.write)
+                        tb_api::write(tr.addr, tr.data);
+                    else
+                        tb_api::read(tr.addr, tr.rdata);
+                    tr.slverr = vif.pslverr;
+                    seq_item_port.item_done();
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_apb_monitor() -> str:
+    return textwrap.dedent("""\
+        class apb_monitor extends uvm_monitor;
+            `uvm_component_utils(apb_monitor)
+            uvm_analysis_port #(apb_trans) ap;
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+                ap = new("ap", this);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "apb_vif", vif))
+                    `uvm_fatal("CFG", "apb_vif missing")
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                apb_trans tr;
+                forever begin
+                    @(posedge vif.pclk iff (vif.psel & vif.penable & vif.pready));
+                    tr = apb_trans::type_id::create("tr");
+                    tr.addr   = vif.paddr;
+                    tr.write  = vif.pwrite;
+                    tr.data   = vif.pwdata;
+                    tr.rdata  = vif.prdata;
+                    tr.slverr = vif.pslverr;
+                    ap.write(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_apb_sequence() -> str:
+    return textwrap.dedent("""\
+        class apb_sequence extends uvm_sequence #(apb_trans);
+            `uvm_object_utils(apb_sequence)
+            int unsigned n_transactions = 1;
+            logic [ADDR_W-1:0] legal_addrs[$];
+
+            function new(string name = "apb_sequence");
+                super.new(name);
+            endfunction
+
+            task body();
+                apb_trans tr;
+                repeat (n_transactions) begin
+                    tr = apb_trans::type_id::create("tr");
+                    start_item(tr);
+                    if (!tr.randomize() with { write == 1'b0; })
+                        `uvm_fatal("RAND", "apb_trans randomize failed")
+                    if (legal_addrs.size() != 0)
+                        tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
+                    finish_item(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
 def emit_ral_block(ip: str, regs: list[dict]) -> str:
     """Generate a minimal uvm_reg_block stub. Full RAL semantics
     (aliasing, RO/WO disjoint) deferred to references/ral_gen.md
@@ -567,16 +762,32 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         )
     addr_consts_str = "\n".join(addr_consts)
 
+    readable_regs = regs[:8]
+    reg_reads = "\n".join(
+        f'                tb_api::read(ADDR_{r["name"]}, rd); '
+        f'`uvm_info(tag, $sformatf("{r["name"]} = 0x%08h", rd), UVM_LOW)'
+        for r in readable_regs
+    )
+    legal_addr_list = ", ".join(f"ADDR_{r['name']}" for r in readable_regs)
+
+    helper_tasks = textwrap.dedent(f"""\
+        task automatic run_reg_access_reads(input string tag);
+            logic [tb_api::DATA_W-1:0] rd;
+            `uvm_info(tag, "reading all registers", UVM_LOW)
+{reg_reads}
+        endtask
+        """)
+
     sanity_test = textwrap.dedent(f"""\
         class {ip}_sanity_test extends uvm_test;
             `uvm_component_utils({ip}_sanity_test)
             function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
-            task run_phase(uvm_phase ph);
-                ph.raise_objection(this);
+            task run_phase(uvm_phase phase);
+                phase.raise_objection(this);
                 wait (tb_api::vif.presetn === 1'b1);
                 repeat (4) @(posedge tb_api::vif.pclk);
                 tb_api::expect_reg({addr_w}'h{sanity_addr:03X}, 32'h{sanity_value:08X}, "SANITY");
-                ph.drop_objection(this);
+                phase.drop_objection(this);
             endtask
         endclass
         """)
@@ -585,16 +796,46 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         class {ip}_reg_access_test extends uvm_test;
             `uvm_component_utils({ip}_reg_access_test)
             function new(string n="{ip}_reg_access_test", uvm_component p=null); super.new(n,p); endfunction
-            task run_phase(uvm_phase ph);
-                logic [31:0] rd;
-                ph.raise_objection(this);
+            task run_phase(uvm_phase phase);
+                phase.raise_objection(this);
                 wait (tb_api::vif.presetn === 1'b1);
                 repeat (4) @(posedge tb_api::vif.pclk);
-                // v1.1 stub: just read every register once and log.
-                // Full RAL walk (write/read/check) deferred to v1.2.
-                `uvm_info("REG_ACCESS", "v1.1 stub — reading all registers", UVM_LOW)
-                {chr(10).join(f'                tb_api::read(ADDR_{r["name"]}, rd); `uvm_info("REG_ACCESS", $sformatf("{r["name"]} = 0x%08h", rd), UVM_LOW)' for r in regs[:8])}
-                ph.drop_objection(this);
+                // Full RAL walk (write/read/check) remains a v1.2 follow-up.
+                run_reg_access_reads("REG_ACCESS");
+                phase.drop_objection(this);
+            endtask
+        endclass
+        """)
+
+    random_seq_test = textwrap.dedent(f"""\
+        class {ip}_random_seq_test extends uvm_test;
+            `uvm_component_utils({ip}_random_seq_test)
+            apb_agent      agent;
+            apb_agt_config cfg;
+
+            function new(string n="{ip}_random_seq_test", uvm_component p=null);
+                super.new(n, p);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                cfg = apb_agt_config::type_id::create("cfg");
+                cfg.vif = tb_api::vif;
+                uvm_config_db#(apb_agt_config)::set(this, "agent", "cfg", cfg);
+                agent = apb_agent::type_id::create("agent", this);
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                apb_sequence seq;
+                phase.raise_objection(this);
+                wait (tb_api::vif.presetn === 1'b1);
+                repeat (4) @(posedge tb_api::vif.pclk);
+                seq = apb_sequence::type_id::create("seq");
+                seq.n_transactions = 100;
+                seq.legal_addrs = '{{{legal_addr_list}}};
+                seq.start(agent.sqr);
+                run_reg_access_reads("RANDOM_SEQ");
+                phase.drop_objection(this);
             endtask
         endclass
         """)
@@ -609,13 +850,16 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         `define {ip.upper()}_PKG_SV
         package {ip}_pkg;
             import uvm_pkg::*;
+            import apb_agt_pkg::*;
         {f'    import {ip}_ref_pkg::*;' if dpi else ''}
             `include "uvm_macros.svh"
 
         {addr_consts_str}
 
+        {helper_tasks}
         {sanity_test}
         {reg_access_test}
+        {random_seq_test}
         {smoke_test}
         endpackage
         `endif
@@ -623,7 +867,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
 
 
 def emit_sv_list(ip: str) -> str:
-    return f"{ip}_sanity_test\n{ip}_reg_access_test\n"
+    return f"{ip}_sanity_test\n{ip}_reg_access_test\n{ip}_random_seq_test\n"
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +915,13 @@ def main() -> int:
     plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(paddr_w), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agt_config.sv", emit_apb_agt_config(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_trans.sv", emit_apb_trans(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_driver.sv", emit_apb_driver(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
+    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
     plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
 
     if has_dpi:
@@ -713,7 +964,7 @@ def main() -> int:
         "files_written": written,
         "has_dpi": has_dpi,
         "register_count": len(regs),
-        "scaffold_version": "v1.1",
+        "scaffold_version": "v1.2",
     }, indent=2))
 
     print(f"scaffold complete: {len(written)} files written")
