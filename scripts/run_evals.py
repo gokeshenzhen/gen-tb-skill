@@ -61,6 +61,8 @@ def _prepare_workspace(eval_def: dict, scratch_root: Path) -> Path:
     (ip_root / "rtl").symlink_to(fixture / "rtl")
     if (fixture / "ref_model").exists():
         (ip_root / "ref_model").symlink_to(fixture / "ref_model")
+    if (fixture / "vip").exists():
+        (ip_root / "vip").symlink_to(fixture / "vip")
     (ip_root / ".prj_top").touch()
     return ip_root
 
@@ -78,7 +80,8 @@ def _emit_audit_inputs(eval_def: dict, ip_root: Path):
     expected = fixture_root / "expected"
 
     # intake.yaml — re-root any references to the source ip_root
-    intake_content = (expected / "intake.yaml").read_text()
+    intake_name = eval_def.get("intake_yaml", "intake.yaml")
+    intake_content = (expected / intake_name).read_text()
     # rewrite ip_root references so paths point to this run's ip_root
     intake_content = re.sub(r"ip_root:.*", f"ip_root: {ip_root}", intake_content)
     intake_content = re.sub(

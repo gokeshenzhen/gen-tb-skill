@@ -1,0 +1,24 @@
+ip_name: uart16550
+ip_root: /tmp/gen-tb-dryrun-uart16550-v1/uart16550
+test_prefix: uart16550
+
+rtl_state: found_in_place
+bus_protocol: apb
+apb_vip_source: reuse_my_vip
+apb_vip_path: $PROJ_DIR/vip/user_apb_vip
+ref_model_language: skip
+clock:
+  pclk_freq_mhz: 100
+  pclk_period_ns: 10
+  additional_domains: []
+reset:
+  presetn_polarity: active_low
+  presetn_duration_cycles: 16
+uvm_version: '1.2'
+paddr_width: 12
+endianness: msb_first
+coverage:
+  enable: false
+sanity_extras: []
+
+simulator: vcs

@@ -1,0 +1,18 @@
+# gen-tb v1.2 expected output for uart16550 fixture with external APB VIP reuse.
+
+.prj_top                                   exists
+script/makefile                            nonempty
+script/setup.sh                            nonempty
+script/check_env.sh                        nonempty
+script/design.f                            nonempty
+script/tb.f                                nonempty
+top/uart16550_tb_top.sv                    nonempty
+tb/apb_if.sv                               nonempty
+tb/external_vip.f                          nonempty
+tb/tb_api/tb_api_pkg.sv                    nonempty
+tb/tb_api/tb_api_primitives.svh            nonempty
+tb/ral/uart16550_reg_block.sv              nonempty
+test/uart16550_pkg.sv                      nonempty
+test/sv_list                               nonempty
+work                                       dir
+work/_gen_audit                            dir

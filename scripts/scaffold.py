@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -95,6 +96,66 @@ def _validate_intake(intake: dict) -> None:
         sys.exit(f"FATAL: intake.yaml missing keys: {missing}")
     if intake["bus_protocol"] != "apb":
         sys.exit(f"FATAL: v1.1 only supports apb (got {intake['bus_protocol']!r})")
+    vip_source = intake.get("apb_vip_source", "generate_fresh")
+    if vip_source not in ("generate_fresh", "reuse_my_vip"):
+        sys.exit(f"FATAL: unsupported apb_vip_source: {vip_source!r}")
+    if vip_source == "reuse_my_vip" and "apb_vip_path" not in intake:
+        sys.exit("FATAL: reuse_my_vip requires intake.yaml key: apb_vip_path")
+
+
+def _resolve_input_path(raw: str, ip_root: Path) -> Path:
+    expanded = raw.replace("$PROJ_DIR", str(ip_root))
+    return Path(expanded).expanduser().resolve()
+
+
+def _scan_external_vip(raw_path: str, ip_root: Path) -> dict[str, Any]:
+    vip_root = _resolve_input_path(raw_path, ip_root)
+    if not vip_root.is_dir():
+        sys.exit(f"FATAL: apb_vip_path is not a directory: {vip_root}")
+
+    sv_files = sorted(vip_root.rglob("*.sv"))
+    if not sv_files:
+        sys.exit(f"FATAL: no SystemVerilog files found under apb_vip_path: {vip_root}")
+
+    packages: list[tuple[str, Path]] = []
+    agents: list[tuple[str, Path]] = []
+    transactions: list[tuple[str, Path]] = []
+    configs: list[tuple[str, Path]] = []
+    interfaces: list[tuple[str, Path]] = []
+    for path in sv_files:
+        text = path.read_text(errors="ignore")
+        for name in re.findall(r"\bpackage\s+([A-Za-z_]\w*)\s*;", text):
+            packages.append((name, path))
+        for name in re.findall(r"\bclass\s+([A-Za-z_]\w*)\s+extends\s+uvm_agent\b", text):
+            agents.append((name, path))
+        for name in re.findall(
+            r"\bclass\s+([A-Za-z_]\w*)\s+extends\s+uvm_sequence_item\b", text
+        ):
+            transactions.append((name, path))
+        for name in re.findall(r"\bclass\s+([A-Za-z_]\w*)\s+extends\s+uvm_object\b", text):
+            if re.search(r"(cfg|config)", name, re.IGNORECASE):
+                configs.append((name, path))
+        for name in re.findall(r"\binterface\s+([A-Za-z_]\w*)\b", text):
+            interfaces.append((name, path))
+
+    package_units = sorted({p for _, p in packages})
+    interface_units = sorted({p for _, p in interfaces})
+    if package_units:
+        compile_units = interface_units + [p for p in package_units if p not in interface_units]
+    else:
+        compile_units = sv_files
+
+    incdirs = sorted({p.parent for p in sv_files})
+    return {
+        "root": vip_root,
+        "packages": [{"name": n, "path": str(p)} for n, p in packages],
+        "agents": [{"name": n, "path": str(p)} for n, p in agents],
+        "transactions": [{"name": n, "path": str(p)} for n, p in transactions],
+        "configs": [{"name": n, "path": str(p)} for n, p in configs],
+        "interfaces": [{"name": n, "path": str(p)} for n, p in interfaces],
+        "incdirs": incdirs,
+        "compile_units": compile_units,
+    }
 
 
 def _pick_sanity_target(regs: list[dict]) -> tuple[int, int]:
@@ -241,22 +302,25 @@ def emit_makefile(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
     )
 
 
-def emit_tb_f(ip: str, has_dpi: bool) -> str:
+def emit_tb_f(ip: str, has_dpi: bool, vip_source: str) -> str:
     tb_root = "$PROJ_DIR/tb"
     test_root = "$PROJ_DIR/test"
     top_root = "$PROJ_DIR/top"
     lines = [
         f"+incdir+{tb_root}",
-        f"+incdir+{tb_root}/apb_agt_top",
         f"+incdir+{tb_root}/tb_api",
         f"+incdir+{tb_root}/ral",
         f"+incdir+{test_root}",
         f"+incdir+{top_root}",
         f"{tb_root}/apb_if.sv",
         f"{tb_root}/tb_api/tb_api_pkg.sv",
-        f"{tb_root}/apb_agt_top/apb_agent.sv",
         f"{tb_root}/ral/{ip}_reg_block.sv",
     ]
+    if vip_source == "generate_fresh":
+        lines.insert(1, f"+incdir+{tb_root}/apb_agt_top")
+        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"{tb_root}/apb_agt_top/apb_agent.sv")
+    else:
+        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"-f {tb_root}/external_vip.f")
     if has_dpi:
         lines.append(f"+incdir+{tb_root}/dpi")
         lines.append(f"{tb_root}/dpi/{ip}_ref_pkg.sv")
@@ -662,6 +726,12 @@ def emit_apb_sequence() -> str:
         """)
 
 
+def emit_external_vip_f(vip: dict[str, Any]) -> str:
+    lines = [f"+incdir+{p}" for p in vip["incdirs"]]
+    lines.extend(str(p) for p in vip["compile_units"])
+    return "\n".join(lines) + "\n"
+
+
 def emit_ral_block(ip: str, regs: list[dict]) -> str:
     """Generate a minimal uvm_reg_block stub. Full RAL semantics
     (aliasing, RO/WO disjoint) deferred to references/ral_gen.md
@@ -845,12 +915,16 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         smoke_test = "    // DPI smoke test generation: see references/refm_dpi.md.\n"
         smoke_test += "    // v1.1 stub — hand-write the smoke test for now using tb_api::wait_status_flag.\n"
 
+    vip_source = intake.get("apb_vip_source", "generate_fresh")
+    agent_import = "    import apb_agt_pkg::*;" if vip_source == "generate_fresh" else ""
+    random_seq_body = random_seq_test if vip_source == "generate_fresh" else ""
+
     return textwrap.dedent(f"""\
         `ifndef {ip.upper()}_PKG_SV
         `define {ip.upper()}_PKG_SV
         package {ip}_pkg;
             import uvm_pkg::*;
-            import apb_agt_pkg::*;
+        {agent_import}
         {f'    import {ip}_ref_pkg::*;' if dpi else ''}
             `include "uvm_macros.svh"
 
@@ -859,15 +933,18 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         {helper_tasks}
         {sanity_test}
         {reg_access_test}
-        {random_seq_test}
+        {random_seq_body}
         {smoke_test}
         endpackage
         `endif
         """)
 
 
-def emit_sv_list(ip: str) -> str:
-    return f"{ip}_sanity_test\n{ip}_reg_access_test\n{ip}_random_seq_test\n"
+def emit_sv_list(ip: str, vip_source: str) -> str:
+    lines = [f"{ip}_sanity_test", f"{ip}_reg_access_test"]
+    if vip_source == "generate_fresh":
+        lines.append(f"{ip}_random_seq_test")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +976,12 @@ def main() -> int:
     has_dpi = intake.get("ref_model_language") == "c_dpi"
     dpi = intake.get("ref_model_inputs") if has_dpi else None
     paddr_w = intake.get("paddr_width", 12)
+    vip_source = intake.get("apb_vip_source", "generate_fresh")
+    external_vip = (
+        _scan_external_vip(intake["apb_vip_path"], ip_root)
+        if vip_source == "reuse_my_vip"
+        else None
+    )
 
     # ---- Build the (target, content) write plan ----
     plan: list[tuple[Path, str, bool]] = []  # (path, content, is_executable)
@@ -907,7 +990,7 @@ def main() -> int:
     plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(), True))
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
-    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi), False))
+    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, vip_source), False))
     plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl), False))
@@ -915,13 +998,16 @@ def main() -> int:
     plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(paddr_w), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agt_config.sv", emit_apb_agt_config(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_trans.sv", emit_apb_trans(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_driver.sv", emit_apb_driver(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
-    plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
+    if vip_source == "generate_fresh":
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agt_config.sv", emit_apb_agt_config(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_trans.sv", emit_apb_trans(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_driver.sv", emit_apb_driver(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
+        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
+    else:
+        plan.append((ip_root / "tb" / "external_vip.f", emit_external_vip_f(external_vip), False))
     plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
 
     if has_dpi:
@@ -929,7 +1015,7 @@ def main() -> int:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_dpi_proto.h", emit_dpi_proto_h(ip, dpi), False))
 
     plan.append((ip_root / "test" / f"{ip}_pkg.sv", emit_test_pkg(intake, regs, dpi), False))
-    plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip), False))
+    plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip, vip_source), False))
 
     # ---- Symlink-guard ALL targets first; refuse any if any fails ----
     resolved = []
@@ -965,6 +1051,16 @@ def main() -> int:
         "has_dpi": has_dpi,
         "register_count": len(regs),
         "scaffold_version": "v1.2",
+        "apb_vip_source": vip_source,
+        "external_vip": {
+            "root": str(external_vip["root"]),
+            "packages": external_vip["packages"],
+            "agents": external_vip["agents"],
+            "transactions": external_vip["transactions"],
+            "configs": external_vip["configs"],
+            "interfaces": external_vip["interfaces"],
+            "compile_units": [str(p) for p in external_vip["compile_units"]],
+        } if external_vip else None,
     }, indent=2))
 
     print(f"scaffold complete: {len(written)} files written")

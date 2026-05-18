@@ -37,6 +37,23 @@
         {"name": "random_seq_runs",              "kind": "sim_passes",     "test": "aes128_random_seq_test"},
         {"name": "no_fixture_pollution",         "kind": "fixture_unchanged"}
       ]
+    },
+    {
+      "id": 3,
+      "name": "uart16550-existing-apb-vip",
+      "fixture": "uart16550",
+      "intake_yaml": "intake_reuse.yaml",
+      "prompt": "I already have an APB VIP under vip/user_apb_vip. Import that VIP instead of generating a new APB agent, then scaffold the UART testbench.",
+      "expected_output": "A UVM tb scaffold that reuses the user APB VIP by emitting tb/external_vip.f, skips fresh APB agent generation, and still passes sanity plus register access tests.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",   "kind": "files_exist", "files_txt": "evals/fixtures/uart16550/expected/files_reuse.txt"},
+        {"name": "compile_succeeds",         "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",      "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",            "kind": "sim_passes",     "test": "uart16550_sanity_test"},
+        {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "uart16550_reg_access_test"},
+        {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
+      ]
     }
   ]
 }

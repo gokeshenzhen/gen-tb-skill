@@ -166,13 +166,19 @@ endclass
 | User situation | gen-tb action |
 |---|---|
 | `apb_vip_source: generate_fresh` | emit the 7 files above (v1.2) |
-| `apb_vip_source: reuse_my_vip` + path | planned external-VIP path: scan VIP for `*_pkg.sv` / `*_agent.sv`; generate a thin shim that wires user's agent into our env; do NOT emit the 7 files |
+| `apb_vip_source: reuse_my_vip` + path | scan the user's VIP, emit `tb/external_vip.f`, import it into the compile, and do NOT emit the 7 fresh-agent files |
 | (silent on intake) | ask via AskUserQuestion before defaulting |
 
-The generated-agent path is implemented in v1.2. The external reuse
-path is intentionally still separate work; until `references/apb_external_vip.md`
-exists, `reuse_my_vip` is a design contract rather than scaffold.py
-behavior.
+Both paths are implemented in v1.2, with different maturity levels:
+
+- `generate_fresh` creates the canonical seven-file agent and the
+  generated `random_seq_test`
+- `reuse_my_vip` is direct import only: it preserves the user's files,
+  emits `tb/external_vip.f`, and keeps the built-in tests on `tb_api`
+  instead of guessing arbitrary third-party runtime APIs
+
+See `references/apb_external_vip.md` for the reuse contract and current
+boundary.
 
 ## Connection to RAL
 
@@ -185,6 +191,8 @@ have the adapter (since reg_access_test uses tb_api directly).
 
 - `references/tb_api.md` — the master-side primitives the driver
   reuses
+- `references/apb_external_vip.md` — direct import rules for an
+  existing user APB VIP
 - `references/ral_gen.md` — RAL emission rules; the adapter lives
   there too
 - `references/directory_layout.md` — `tb/apb_agt_top/` placement
