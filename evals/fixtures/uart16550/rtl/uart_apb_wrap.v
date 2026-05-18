@@ -2,16 +2,16 @@
 // uart_apb_wrap.v
 //
 // APB3 slave wrapper around the OpenCores uart16550 Wishbone core.
-// Generates a Wishbone classic single-transfer cycle per APB access.
+// Presents standard byte-aligned register access (one reg per 4-byte
+// PADDR offset) by inverting uart_wb.v's 32-bit-mode byte-packing
+// scheme.
 //
-// Address mapping:
-//   PADDR[6:2] -> wb_adr_i[4:0]   (5-bit word index into 16550 regs)
-//   PADDR[1:0] must be 2'b00.
-//
-// The uart_top responds combinationally (ack typically same cycle in
-// the OpenCores design when not in a fifo-blocking case), so this
-// wrapper inserts at most one APB wait state by deasserting pready
-// until wb_ack arrives.
+// 16550 reg index N (0..7) is reached via PADDR = N * 4.
+// Internally:
+//   wb_adr_is[4:2] <= reg_idx[2:0]
+//   wb_sel        <= 4'b1000 >> reg_idx[1:0]
+//   prdata byte selected from wb_dat_o[(3-reg_idx[1:0])*8 +: 8]
+//   pwdata byte placed into wb_dat_is[(3-reg_idx[1:0])*8 +: 8]
 //
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 gen-tb contributors
@@ -45,31 +45,58 @@ module uart_apb_wrap (
     input  wire        dcd_pad_i
 );
 
-    wire        wb_stb;
-    wire        wb_cyc;
-    wire        wb_we;
-    wire [4:0]  wb_adr;
-    wire [31:0] wb_dat_o;   // tb -> core
-    wire [31:0] wb_dat_i;   // core -> tb
+    // ---- reg_idx = PADDR[4:2] (8 regs at PADDR=0,4,8,...,1C) ----
+    wire [2:0] reg_idx     = paddr[4:2];
+    wire [1:0] lane        = reg_idx[1:0];
+
+    // wb_adr_int[4:2] = wb_adr_is[4:2]; we want wb_adr_int to be reg_idx
+    // (0..7) with the low 2 bits supplied by wb_sel. So reg_idx[2] goes
+    // into wb_adr_is[2], and bits [4:3] are zero (since reg_idx ≤ 7).
+    wire [4:0] wb_adr      = {2'b00, reg_idx};
+
+    // sel encoding (per uart_wb.v 32-bit-mode mapping)
+    reg  [3:0] wb_sel;
+    always @* begin
+        case (lane)
+            2'b00:   wb_sel = 4'b1000;
+            2'b01:   wb_sel = 4'b0100;
+            2'b10:   wb_sel = 4'b0010;
+            default: wb_sel = 4'b0001;
+        endcase
+    end
+
+    // Byte-lane shift for the WRITE path. wb_dat8_i = wb_dat_is[(3-lane)*8 +: 8].
+    // So pwdata[7:0] must be placed at that bit position.
+    reg [31:0] wb_dat_i_drv;
+    always @* begin
+        case (lane)
+            2'b00:   wb_dat_i_drv = {pwdata[7:0],        24'b0};   // bits [31:24]
+            2'b01:   wb_dat_i_drv = { 8'b0, pwdata[7:0], 16'b0};   // bits [23:16]
+            2'b10:   wb_dat_i_drv = {16'b0, pwdata[7:0],  8'b0};   // bits [15:8]
+            default: wb_dat_i_drv = {24'b0, pwdata[7:0]};          // bits [7:0]
+        endcase
+    end
+
+    // APB → WB cycle gating
+    wire        wb_cyc  = psel & penable;
+    wire        wb_stb  = wb_cyc;
+    wire        wb_we   = wb_cyc & pwrite;
+    wire [31:0] wb_dat_o_core;
     wire        wb_ack;
-    // TODO(v1.1): this wrapper has a known issue interfacing with
-    // uart_wb's 32-bit mode byte-packing scheme (wb_adr_int[1:0] is
-    // overwritten from wb_sel, packing 4 8-bit regs per 32-bit word).
-    // The current wb_sel=4'b0001 only reaches the byte-3 lane (LCR
-    // for paddr=0). For correct standard 16550 access, either rebuild
-    // the fixture with DATA_BUS_WIDTH_8 mode or write a byte-lane
-    // muxing wrapper that decodes PADDR[4:0] into wb_adr+wb_sel
-    // pairs. See docs/aes128_dryrun_v1_gaps.md follow-up.
-    wire [3:0]  wb_sel = 4'b0001;
 
-    // Drive WB cycle during APB access phase (psel & penable).
-    assign wb_cyc = psel & penable;
-    assign wb_stb = wb_cyc;
-    assign wb_we  = wb_cyc & pwrite;
-    assign wb_adr = paddr[6:2];
-    assign wb_dat_o = pwdata;
+    // Byte-lane shift for the READ path. wb_dat_o has the 8-bit reg at
+    // the same bit position dictated by sel.  Strip back down to byte 0.
+    reg [7:0] read_byte;
+    always @* begin
+        case (lane)
+            2'b00:   read_byte = wb_dat_o_core[31:24];
+            2'b01:   read_byte = wb_dat_o_core[23:16];
+            2'b10:   read_byte = wb_dat_o_core[15:8];
+            default: read_byte = wb_dat_o_core[7:0];
+        endcase
+    end
 
-    assign prdata  = wb_dat_i;
+    assign prdata  = {24'b0, read_byte};
     assign pready  = wb_ack;
     assign pslverr = 1'b0;
 
@@ -77,8 +104,8 @@ module uart_apb_wrap (
         .wb_clk_i   (pclk),
         .wb_rst_i   (~presetn),
         .wb_adr_i   (wb_adr),
-        .wb_dat_i   (wb_dat_o),
-        .wb_dat_o   (wb_dat_i),
+        .wb_dat_i   (wb_dat_i_drv),
+        .wb_dat_o   (wb_dat_o_core),
         .wb_we_i    (wb_we),
         .wb_stb_i   (wb_stb),
         .wb_cyc_i   (wb_cyc),

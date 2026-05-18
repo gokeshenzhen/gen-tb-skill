@@ -1,19 +1,20 @@
-# Minimum set of files gen-tb must produce for this fixture.
-# See uart16550/expected/files.txt for the file-format spec.
+# gen-tb v1.1 expected output for aes128 fixture (C-DPI path).
+# Format: <path>[<TAB><kind>]    kind ∈ {file, dir, exists, nonempty (default)}
 
 .prj_top                                  exists
 script/makefile                           nonempty
 script/setup.sh                           nonempty
-script/check_env.sh                       exists
-rtl/design.f                              nonempty
-top/aes_tb_top.sv                         nonempty
-tb/aes_env.sv                             nonempty
-tb/aes_sb.sv                              nonempty
-tb/apb_agt_top/apb_agent.sv               nonempty
-tb/apb_agt_top/apb_driver.sv              nonempty
-tb/ref_model/aes_ref_pkg.sv               nonempty
-tb/ral/aes_reg_block.sv                   nonempty
-test/aes_pkg.sv                           nonempty
-test/aes_test_lib.sv                      nonempty
+script/check_env.sh                       nonempty
+script/design.f                           nonempty
+script/tb.f                               nonempty
+top/aes128_tb_top.sv                      nonempty
+tb/apb_if.sv                              nonempty
+tb/tb_api/tb_api_pkg.sv                   nonempty
+tb/tb_api/tb_api_primitives.svh           nonempty
+tb/ral/aes128_reg_block.sv                nonempty
+tb/dpi/aes128_ref_pkg.sv                  nonempty
+tb/dpi/aes128_dpi_proto.h                 nonempty
+test/aes128_pkg.sv                        nonempty
 test/sv_list                              nonempty
 work                                      dir
+work/_gen_audit                           dir

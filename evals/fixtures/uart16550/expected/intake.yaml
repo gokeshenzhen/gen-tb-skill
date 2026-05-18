@@ -1,0 +1,23 @@
+ip_name: uart16550
+ip_root: /tmp/gen-tb-dryrun-uart16550-v1/uart16550
+test_prefix: uart16550        # v1: IP-prefixed names mandatory
+
+rtl_state: found_in_place
+bus_protocol: apb
+apb_vip_source: generate_fresh
+ref_model_language: skip
+clock:
+  pclk_freq_mhz: 100
+  pclk_period_ns: 10
+  additional_domains: []      # v1: explicit multi-clock answer
+reset:
+  presetn_polarity: active_low
+  presetn_duration_cycles: 16
+uvm_version: '1.2'            # v1: explicit
+paddr_width: 12               # v1: explicit
+endianness: msb_first         # v1: not strictly applicable to UART, default
+coverage:
+  enable: false
+sanity_extras: []
+
+simulator: vcs

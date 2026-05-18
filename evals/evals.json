@@ -1,0 +1,40 @@
+{
+  "skill_name": "gen-tb",
+  "schema_version": "1.0",
+  "evals": [
+    {
+      "id": 1,
+      "name": "uart16550-peripheral",
+      "fixture": "uart16550",
+      "prompt": "I have an APB-wrapped 16550 UART IP. The synthesizable RTL is in rtl/, the spec PDF is in spec/UART_spec.pdf, and a register table is in spec/uart_regs.xlsx. Generate a UVM testbench with a passing sanity test and a register access test.",
+      "expected_output": "A UVM tb scaffold under the IP directory. Compile must succeed with no warnings about dual drivers. <ip>_sanity_test must pass with UVM_ERROR=0 and at least one positive register-read assertion. <ip>_reg_access_test must run to completion.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",   "kind": "files_exist", "files_txt": "evals/fixtures/uart16550/expected/files.txt"},
+        {"name": "compile_succeeds",         "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",      "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",            "kind": "sim_passes",     "test": "uart16550_sanity_test"},
+        {"name": "sanity_positive_check_hit", "kind": "log_contains",  "test": "uart16550_sanity_test", "needle": "= 0x000000c1"},
+        {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "uart16550_reg_access_test"},
+        {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "aes128-algorithmic-cdpi",
+      "fixture": "aes128",
+      "prompt": "Generate a UVM testbench for the AES-128 core. RTL is in rtl/ (aes_apb_wrap is the top), the spec is in spec/aes_wrapper_spec.md, the register table is in spec/aes_regs.xlsx, and the C reference model lives in ref_model/ (tiny_aes.c + aes_ref.c). Use C-DPI; the scoreboard should compare DUT output to aes128_ecb_encrypt.",
+      "expected_output": "A UVM tb scaffold with DPI plumbing. VCS must compile and link the user C code without warnings. Sanity must read NAME0 and see 0x61657320 (\"aes \"). reg_access must run. (Smoke test is a v1.2 deliverable — not required for v1.1 to pass.)",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",       "kind": "files_exist", "files_txt": "evals/fixtures/aes128/expected/files.txt"},
+        {"name": "compile_succeeds",             "kind": "compile_exit_zero"},
+        {"name": "dpi_c_compiled",               "kind": "compile_log_contains", "needle": "tiny_aes.c"},
+        {"name": "no_compile_warnings",          "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",                "kind": "sim_passes",     "test": "aes128_sanity_test"},
+        {"name": "sanity_reads_name0",           "kind": "log_contains",   "test": "aes128_sanity_test", "needle": "= 0x61657320"},
+        {"name": "no_fixture_pollution",         "kind": "fixture_unchanged"}
+      ]
+    }
+  ]
+}

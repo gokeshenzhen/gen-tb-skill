@@ -48,8 +48,12 @@ _uart_base = [
     ("IER", 0x01, 8, "RW", 0x00, "elsi",  "2", "RW", 0, "Enable receiver line status interrupt"),
     ("IER", 0x01, 8, "RW", 0x00, "edssi", "3", "RW", 0, "Enable modem status interrupt"),
     ("DLM", 0x01, 8, "RW", 0x00, "div_hi", "7:0", "RW", 0, "Divisor latch high (DLAB=1)"),
-    ("IIR", 0x02, 8, "RO", 0x01, "pend", "0", "RO", 1, "0 = interrupt pending"),
-    ("IIR", 0x02, 8, "RO", 0x01, "id",   "3:1", "RO", 0, "Interrupt ID"),
+    # NB: OpenCores 16550 uart_regs.v synthesizes IIR as {4'b1100, iir[3:0]}.
+    # At reset iir=4'b0001, so the byte read back is 0xC1 — not the 0x01
+    # from the bare 16550 standards document. Reset value here matches DUT.
+    ("IIR", 0x02, 8, "RO", 0xC1, "pend", "0", "RO", 1, "0 = interrupt pending"),
+    ("IIR", 0x02, 8, "RO", 0xC1, "id",   "3:1", "RO", 0, "Interrupt ID"),
+    ("IIR", 0x02, 8, "RO", 0xC1, "fixed", "7:4", "RO", 0xC, "Fixed top nibble (OpenCores synth)"),
     ("FCR", 0x02, 8, "WO", 0x00, "fifo_en", "0", "WO", 0, "FIFO enable"),
     ("FCR", 0x02, 8, "WO", 0x00, "rx_clr", "1", "WO", 0, "Clear RX FIFO"),
     ("FCR", 0x02, 8, "WO", 0x00, "tx_clr", "2", "WO", 0, "Clear TX FIFO"),

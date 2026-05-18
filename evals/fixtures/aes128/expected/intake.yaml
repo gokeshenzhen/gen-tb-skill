@@ -1,0 +1,38 @@
+ip_name: aes128
+ip_root: /tmp/gen-tb-scaffold-aes/aes128
+test_prefix: aes128
+
+rtl_state: found_in_place
+bus_protocol: apb
+apb_vip_source: generate_fresh
+ref_model_language: c_dpi
+ref_model_inputs:
+  c_sources:
+    - $PROJ_DIR/ref_model/tiny_aes.c
+    - $PROJ_DIR/ref_model/aes_ref.c
+  c_headers:
+    - $PROJ_DIR/ref_model/tiny_aes.h
+  include_dirs: []
+  cflags: ["-O2", "-Wall"]
+  dpi_exports:
+    - c_name: aes128_ecb_encrypt
+      sv_name: aes128_ecb_encrypt
+      args:
+        - {dir: input,  type: "bit [31:0]", name: key,  packing: "[0:3]"}
+        - {dir: input,  type: "bit [31:0]", name: din,  packing: "[0:3]"}
+        - {dir: output, type: "bit [31:0]", name: dout, packing: "[0:3]"}
+    - c_name: aes128_ecb_decrypt
+      sv_name: aes128_ecb_decrypt
+      args:
+        - {dir: input,  type: "bit [31:0]", name: key,  packing: "[0:3]"}
+        - {dir: input,  type: "bit [31:0]", name: din,  packing: "[0:3]"}
+        - {dir: output, type: "bit [31:0]", name: dout, packing: "[0:3]"}
+
+clock: {pclk_freq_mhz: 100, pclk_period_ns: 10, additional_domains: []}
+reset: {presetn_polarity: active_low, presetn_duration_cycles: 16}
+uvm_version: '1.2'
+paddr_width: 12
+endianness: msb_first
+coverage: {enable: false}
+sanity_extras: [aes128_ecb_smoke]
+simulator: vcs
