@@ -127,13 +127,38 @@ In order of preference (stop at first that works):
 4. **No RTL at all** → generate a stub from the spec's interface
    description (see `references/rtl_stub.md`).
 
-Top-module inference: find modules that are defined but not instantiated
-anywhere. If multiple candidates, prefer the one whose name matches the
-IP name, else `AskUserQuestion`.
+**Where the user's RTL lives is decoupled from where gen-tb writes its
+outputs**. The generated `design.f` references the user's actual paths
+via `$PROJ_DIR/<actual_subdir>/...` — gen-tb does **not** require user
+RTL to be under `<ip>/rtl/`. The `rtl/` subdirectory in the scaffold
+contract is reserved for *generated* stubs only. This decoupling means
+gen-tb can scaffold even when the IP root has a symlinked or
+read-only `rtl/` pointing at a third-party library tree.
+
+**Top-module inference** — apply in order:
+1. The single module not instantiated by any other in the discovered
+   file set.
+2. The module whose name matches the IP name (`<ip>`, `<ip>_top`,
+   `<ip>_core`, `<ip>_apb_wrap`).
+3. If still ambiguous OR if the available parser is regex-only (no
+   real SV AST tool like slang/verible installed), **always**
+   `AskUserQuestion` — do not break ties alphabetically.
+
+Regex-based instantiation scanning misses multi-line port maps and
+non-standard naming. When `slang` or `verible-verilog-syntax` is on
+PATH, prefer them and label the result confidence `high`; otherwise
+label `medium` and the user gets a confirmation prompt.
+
+**Record APB interface signals verbatim**. In `rtl_discovery.yaml`,
+capture each APB port's exact name and case (`pclk` vs `PCLK`,
+`presetn` vs `PRESETn`), width, and direction. The agent generation
+in Phase 4 uses these strings literally — never normalize casing,
+never assume widths. See `references/rtl_discovery.md` for the yaml
+schema.
 
 Write `work/_gen_audit/rtl_discovery.yaml` describing what was found
-including a confidence label per file (`high` = user-supplied filelist,
-`medium` = scan-inferred, `low` = guess).
+including a confidence label per file (`high` = user-supplied filelist
+or AST-parsed, `medium` = regex-scan-inferred, `low` = guess).
 
 ### VIP discovery (when user has existing AMBA UVCs)
 
@@ -167,10 +192,31 @@ conversation):
 2. **Bus protocol** — APB (v1 only) — confirm
 3. **APB VIP source** — generate fresh / reuse my VIP at `<path>`
 4. **Reference model language** — SystemVerilog / C-DPI / Python-DPI / skip
-5. **Clock & reset polarity** — `pclk` freq (MHz) + `presetn` active-low
-6. **Coverage** — enable functional cov + scoreboard / skip
-7. **Sanity test additions** — beyond default `test_sanity` +
-   `reg_access_test`, anything you want guaranteed?
+5. **Clock & reset** — `pclk` freq (MHz), `presetn` polarity, hold
+   cycles, **plus whether there are additional clock domains** (gen-tb v1
+   assumes single domain — flag multi-domain as out-of-scope and ask
+   the user to confirm one canonical clock or abort)
+6. **UVM version** — 1.1 / 1.2 (default 1.2, inferred from `$VCS_HOME`
+   if available); behavior of `uvm_config_db` differs subtly
+7. **Address space size** — `paddr` width in bits (default 12 = 4KB);
+   needed to dimension the APB driver's transaction class
+8. **Endianness for multi-word reg arrays** — MSB-first (KEY0 = high
+   bits) or LSB-first (KEY0 = low bits); only asked when the reg
+   table contains `<name>0..N` arrays
+9. **Coverage** — enable functional cov + scoreboard / skip
+10. **Sanity test additions** — beyond default `<ip>_sanity_test` +
+    `reg_access_test`, anything you want guaranteed?
+
+**Test naming convention is fixed**: all generated tests are
+`<ip>_<purpose>_test` (e.g., `uart16550_sanity_test`,
+`uart16550_reg_access_test`). Never use bare `sanity_test` —
+collisions are guaranteed in any multi-IP regression.
+
+**Every AskUserQuestion turn must include an `Abort / restart` option**
+as the last choice. If the user picks it, write
+`work/_gen_audit/intake.yaml` with an `aborted_at: phase_2` marker and
+exit without touching anything else. The audit dir stays for the user
+to inspect.
 
 Save answers to `work/_gen_audit/intake.yaml` as you go. **If the user
 interrupts and resumes later, read intake.yaml first** and skip already
@@ -202,9 +248,24 @@ work/_gen_audit/spec_normalized/
 | `*.pdf` behavior | `pdfplumber` text + tables | text-only spec; tables become "tables-in-pdf" warnings |
 | `*.md` behavior | passthrough | already normalized |
 
-If a parser is not installed, write a clear error to `parse_report.md`
-and surface it to the user **before** scaffolding — do not generate
-half-correct code.
+**Minimum viable spec**: a parsed register table (yaml, xlsx, csv, md
+table, or IP-XACT). PDF/docx behavioral specs are *enrichment* — they
+populate `behavior.md` but their absence does not block scaffolding.
+If the register-table parser fails (file unparseable or its parser
+package not installed), abort Phase 3 with a precise install hint
+(e.g., `python3 -m pip install --user openpyxl`) and let the user
+retry. Never proceed to Phase 4 without a valid `registers.yaml`.
+
+For behavioral parsers (pdfplumber, python-docx), missing packages
+degrade gracefully — write a stub `behavior.md` noting the unavailable
+parser, log a warning in `parse_report.md`, and continue.
+
+**Reset value cross-check**: when both register-level `reset` and
+field-level `reset` are supplied, field-level wins. The parser
+computes the register-level reset by OR-ing each field's reset into
+its bit position, and warns in `parse_report.md` if the computed value
+disagrees with the supplied register-level value. The yaml downstream
+carries both, but the RAL generation reads field-level.
 
 ### parse_report.md is a trust boundary
 
@@ -228,13 +289,14 @@ Materialize the directory tree. The shape is fixed — do not improvise.
 ```
 <ip>/
 ├── .prj_top                         # marker for setup.sh walk-up
-├── rtl/
-│   ├── design.f                     # filelist (generated, $PROJ_DIR paths)
-│   └── (user RTL referenced, NOT copied — except generated stubs)
+├── rtl/                             # ONLY when gen-tb generated stubs
+│   └── (otherwise user's RTL stays wherever it already is)
 ├── script/
 │   ├── makefile                     # SV_CASE / seed / cov contract — see below
 │   ├── setup.sh                     # walks up to .prj_top, exports PROJ_DIR/WORK_DIR
 │   ├── check_env.sh                 # validates vcs + UVM_HOME + license
+│   ├── design.f                     # filelist (generated, $PROJ_DIR paths)
+│   ├── tb.f                         # tb-side filelist (sources + incdirs)
 │   └── vcm.cfg                      # coverage hierarchy scope
 ├── top/
 │   ├── <ip>_tb_top.sv               # clocks, resets, dut + iface instantiation, run_test
@@ -279,16 +341,30 @@ Materialize the directory tree. The shape is fixed — do not improvise.
         └── unresolved.md            # filled in Phase 7
 ```
 
+**`design.f` lives in `script/`, not `rtl/`**, so that gen-tb does not
+need write access to the user's RTL directory. This diverges from
+some older reference projects (e.g., uart_uvm_demo) that placed
+`design.f` under `rtl/`. The generated `CLAUDE.md` documents the
+location so future Claude sessions don't go looking in the wrong place.
+
+**`tb.f` collects tb-side sources + `+incdir+` flags**, so the
+makefile's compile command stays stable as new agents/categories are
+added. Adding a new agent means appending lines to `tb.f`, not editing
+the makefile.
+
 ### The Makefile contract
 
-The makefile is the public API of the generated tb. **Do not deviate**
-from these targets and variables — downstream tools (regression scripts,
-TraceWeave, the user's eyes) all rely on them:
+The file is named **lowercase `makefile`** (matching the reference
+project convention) — not `Makefile`. The makefile is the public API
+of the generated tb. **Do not deviate** from these targets and
+variables — downstream tools (regression scripts, TraceWeave, the
+user's eyes) all rely on them:
 
 ```
 SV_CASE ?= <ip>_sanity_test    # name passed to +UVM_TESTNAME
 seed    ?= $(shell date +1%N)
 cov     ?= 0                   # set to 1 to enable coverage
+UVM_VER ?= 1.2                 # from intake.yaml; -ntb_opts uvm-$(UVM_VER)
 
 make comp                                # compile only
 make run SV_CASE=<case>                  # run one case
@@ -301,6 +377,37 @@ make clean
 
 Per-case artifacts go to `work/work_<SV_CASE>_/`. See
 `references/makefile_contract.md` for the full template.
+
+### Top module + interface conventions
+
+The generated `top/<ip>_tb_top.sv` and `tb/apb_if.sv` must follow two
+rules that have bitten generated tb's repeatedly:
+
+1. **Clock and reset are interface input ports, not internal logic**.
+   ```systemverilog
+   interface apb_if(input logic pclk, input logic presetn);
+       // ... other signals declared as logic
+   endinterface
+   ```
+   The top instantiates the interface passing in the clock+reset
+   signals it drives:
+   ```systemverilog
+   apb_if apb (.pclk(pclk), .presetn(presetn));
+   ```
+   Declaring `presetn` as `logic` inside the interface AND assigning it
+   from the top (`assign apb.presetn = presetn;`) creates a dual-driver
+   warning that VCS will eventually promote to an error.
+
+2. **Non-bus DUT inputs get safe default ties at the top**. For every
+   DUT input port not driven by an agent, generate a `logic` declaration
+   initialized to the protocol-idle value:
+   - serial RX-like (`rx`, `srx`, `cts`, `dsr`, `ri`, `dcd`) → `1'b1`
+   - reset-like → matches `presetn` polarity
+   - other → `1'b0` with a `// TODO: drive from <agent>` comment
+
+   DUT outputs not consumed get a `wire` declaration with no driver.
+   This keeps the sanity test compilable+runnable without a fully
+   wired-up agent set. See `references/top_sv.md`.
 
 ### tb_api — the DE persona surface
 
@@ -333,6 +440,24 @@ Generate `tb/ral/<ip>_reg_block.sv` directly from
 subclass; every field becomes a `uvm_reg_field`. The `reg_access_test`
 walks the block and does a write-then-read on every RW field. See
 `references/ral_gen.md`.
+
+**Two non-trivial cases** the parser must flag and the generator must
+handle (or the default `reg_access_test` will produce spurious
+failures):
+
+- **Bank-selected aliasing** (e.g., 16550 DLAB at 0x00 maps to RBR/THR
+  on read/write or to DLL when LCR[7]=1). registers.yaml encodes this
+  via an `aliased_by: <reg>.<field>` marker. RAL splits aliased regs
+  into separate `uvm_reg` instances; `reg_access_test` excludes them
+  by default. A separate test (e.g., `<ip>_bank_access_test`) is
+  generated as a stub for the user to fill in.
+- **Disjoint RO/WO at same offset** (e.g., IIR read-only + FCR
+  write-only at 0x08). RAL emits two `uvm_reg` instances mapped to
+  the same offset with `UVM_NOACCESS` for the access mode they don't
+  own. `reg_access_test` handles each per its access type.
+
+If either case is present, `parse_report.md` lists the affected
+registers under a `## Address aliasing` heading so the user is warned.
 
 ---
 
@@ -381,8 +506,25 @@ Once compile is clean, run two mandatory tests:
 
 ```bash
 make all SV_CASE=<ip>_sanity_test
-make all SV_CASE=reg_access_test
+make all SV_CASE=<ip>_reg_access_test
 ```
+
+**Sanity must include a positive check**, not merely the absence of
+errors. A test that waits 200 cycles and exits with zero `UVM_ERROR`
+is *not* sanity — it proves nothing about the DUT being alive. The
+generated `<ip>_sanity_test` MUST at minimum:
+
+1. Hold reset for the configured `presetn_duration_cycles`.
+2. After deassertion, drive one APB read of a register with a known
+   non-zero reset value (pick the first register in `registers.yaml`
+   with `reset != 0`; if none, use a status register that should read
+   back its computed reset).
+3. Assert `prdata == expected_reset` and `uvm_error` on mismatch.
+
+If no register has a non-zero reset, fall back to: read register 0,
+expect zero, and additionally assert that the DUT responds (pready
+goes high) within a configurable timeout. Either way: a sanity test
+that passes proves the DUT bus interface is alive.
 
 Parse each `run.log` for `UVM_FATAL`, `UVM_ERROR`, simulator
 errors. Save outcome to `work/_gen_audit/sanity_result.json`:
@@ -442,6 +584,14 @@ need to.
   Exception: stub RTL generated by gen-tb itself.
 - **Never edit user RTL**. The skill is testbench-only. Even a tempting
   one-line fix is out of scope.
+- **Never write through a symlink that escapes the project root.**
+  Before *any* file write under `<ip>/`, resolve the target with
+  `realpath` and verify it stays within `realpath(<ip>)`. If the
+  user's `rtl/` is a symlink pointing into a read-only IP library,
+  a naive write to `<ip>/rtl/design.f` will silently mutate that
+  library. The correct response is to refuse the write and use a
+  gen-tb-owned location instead (e.g., `script/design.f`). Symlink
+  audit applies even to `mkdir -p`.
 - **Never silently overwrite**. If a target file exists, back it up to
   `<path>.bak.<timestamp>` first and warn the user in the summary.
 - **Never invent registers**. The RAL must derive 1:1 from
@@ -463,10 +613,12 @@ upfront.
 |---|---|
 | `references/directory_layout.md` | Phase 4 — exact file list per IP class |
 | `references/makefile_contract.md` | Phase 4 — full Makefile template + variables |
+| `references/rtl_discovery.md` | Phase 1 — `rtl_discovery.yaml` schema + AST-vs-regex tradeoffs |
+| `references/top_sv.md` | Phase 4 — top.sv generation rules (clk/rst ports, DUT pad ties) |
 | `references/apb.md` | Phase 4 — APB agent generation rules |
 | `references/spec_parsing.md` | Phase 3 — per-format parser invocation + pitfalls |
-| `references/registers_yaml_schema.md` | Phase 3 + Phase 4 — yaml schema + RAL mapping |
-| `references/ral_gen.md` | Phase 4 — RAL class layout |
+| `references/registers_yaml_schema.md` | Phase 3 + Phase 4 — yaml schema (incl. `aliased_by`) + RAL mapping |
+| `references/ral_gen.md` | Phase 4 — RAL class layout, aliasing handling |
 | `references/refm_dpi.md` | Phase 4 — DPI function signatures + C/Py wiring |
 | `references/tb_api.md` | Phase 4 — tb_api task list + internals |
 | `references/rtl_stub.md` | Phase 1 — when generating RTL stub from spec only |
@@ -489,13 +641,17 @@ upfront.
 ## Quick checklist before you say "done"
 
 - [ ] `<ip>/.prj_top` exists
-- [ ] `make comp` exit code 0
-- [ ] `make all SV_CASE=<ip>_sanity_test` shows no UVM_ERROR/FATAL
-- [ ] `make all SV_CASE=reg_access_test` shows no UVM_ERROR/FATAL
+- [ ] No file was written outside `realpath(<ip>)` (symlink audit clean)
+- [ ] `make comp` exit code 0, **no warnings about dual drivers or
+       structural/procedural mixing**
+- [ ] `make all SV_CASE=<ip>_sanity_test`: no UVM_ERROR/FATAL **and**
+       at least one positive assertion succeeded (read of known reset
+       value)
+- [ ] `make all SV_CASE=<ip>_reg_access_test`: no UVM_ERROR/FATAL
 - [ ] (algorithmic IP) refm smoke test shows scoreboard match
 - [ ] `work/_gen_audit/intake.yaml` complete
 - [ ] `work/_gen_audit/spec_normalized/parse_report.md` reviewed for
-       warnings
+       warnings, especially `## Address aliasing` if present
 - [ ] `work/_gen_audit/unresolved.md` exists (may be empty)
-- [ ] `<ip>/CLAUDE.md` written
+- [ ] `<ip>/CLAUDE.md` written; mentions `script/design.f` location
 - [ ] Summary delivered to user with the exact next command
