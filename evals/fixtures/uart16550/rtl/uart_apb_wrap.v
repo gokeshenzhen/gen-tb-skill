@@ -52,7 +52,15 @@ module uart_apb_wrap (
     wire [31:0] wb_dat_o;   // tb -> core
     wire [31:0] wb_dat_i;   // core -> tb
     wire        wb_ack;
-    wire [3:0]  wb_sel = 4'b1111;
+    // TODO(v1.1): this wrapper has a known issue interfacing with
+    // uart_wb's 32-bit mode byte-packing scheme (wb_adr_int[1:0] is
+    // overwritten from wb_sel, packing 4 8-bit regs per 32-bit word).
+    // The current wb_sel=4'b0001 only reaches the byte-3 lane (LCR
+    // for paddr=0). For correct standard 16550 access, either rebuild
+    // the fixture with DATA_BUS_WIDTH_8 mode or write a byte-lane
+    // muxing wrapper that decodes PADDR[4:0] into wb_adr+wb_sel
+    // pairs. See docs/aes128_dryrun_v1_gaps.md follow-up.
+    wire [3:0]  wb_sel = 4'b0001;
 
     // Drive WB cycle during APB access phase (psel & penable).
     assign wb_cyc = psel & penable;
