@@ -12,6 +12,8 @@ gen-tb-workspace/
 # Local-only experiments
 scratch/
 tmp/
+docs/
+plan/
 
 # Editor / OS
 .idea/
