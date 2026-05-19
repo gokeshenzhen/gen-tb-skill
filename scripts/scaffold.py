@@ -101,6 +101,11 @@ def _validate_intake(intake: dict) -> None:
         sys.exit(f"FATAL: unsupported apb_vip_source: {vip_source!r}")
     if vip_source == "reuse_my_vip" and "apb_vip_path" not in intake:
         sys.exit("FATAL: reuse_my_vip requires intake.yaml key: apb_vip_path")
+    reuse_level = intake.get("apb_vip_reuse_level", "import_only")
+    if reuse_level not in ("import_only", "drive_with_vip"):
+        sys.exit(f"FATAL: unsupported apb_vip_reuse_level: {reuse_level!r}")
+    if vip_source != "reuse_my_vip" and "apb_vip_reuse_level" in intake:
+        sys.exit("FATAL: apb_vip_reuse_level is valid only with reuse_my_vip")
 
 
 def _resolve_input_path(raw: str, ip_root: Path) -> Path:
@@ -977,6 +982,7 @@ def main() -> int:
     dpi = intake.get("ref_model_inputs") if has_dpi else None
     paddr_w = intake.get("paddr_width", 12)
     vip_source = intake.get("apb_vip_source", "generate_fresh")
+    vip_reuse_level = intake.get("apb_vip_reuse_level", "import_only")
     external_vip = (
         _scan_external_vip(intake["apb_vip_path"], ip_root)
         if vip_source == "reuse_my_vip"
@@ -1052,6 +1058,7 @@ def main() -> int:
         "register_count": len(regs),
         "scaffold_version": "v1.2",
         "apb_vip_source": vip_source,
+        "apb_vip_reuse_level": vip_reuse_level if vip_source == "reuse_my_vip" else None,
         "external_vip": {
             "root": str(external_vip["root"]),
             "packages": external_vip["packages"],

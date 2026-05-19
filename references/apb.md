@@ -173,9 +173,13 @@ Both paths are implemented in v1.2, with different maturity levels:
 
 - `generate_fresh` creates the canonical seven-file agent and the
   generated `random_seq_test`
-- `reuse_my_vip` is direct import only: it preserves the user's files,
-  emits `tb/external_vip.f`, and keeps the built-in tests on `tb_api`
-  instead of guessing arbitrary third-party runtime APIs
+- `reuse_my_vip` defaults to `apb_vip_reuse_level: import_only`: it
+  preserves the user's files, emits `tb/external_vip.f`, and keeps the
+  built-in tests on `tb_api` instead of guessing arbitrary third-party
+  runtime APIs
+- `apb_vip_reuse_level: drive_with_vip` means Phase 5 must generate
+  project-local glue and one minimal external-VIP read/write smoke
+  sequence without editing the user's VIP source
 
 See `references/apb_external_vip.md` for the reuse contract and current
 boundary.

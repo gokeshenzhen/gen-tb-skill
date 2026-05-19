@@ -6,6 +6,7 @@ rtl_state: found_in_place
 bus_protocol: apb
 apb_vip_source: reuse_my_vip
 apb_vip_path: $PROJ_DIR/vip/user_apb_vip
+apb_vip_reuse_level: import_only
 ref_model_language: skip
 clock:
   pclk_freq_mhz: 100
