@@ -19,6 +19,7 @@ tb/apb_agt_top/apb_sequence.sv            nonempty
 tb/tb_api/tb_api_pkg.sv                   nonempty
 tb/tb_api/tb_api_primitives.svh           nonempty
 tb/ral/aes128_reg_block.sv                nonempty
+tb/ral/aes128_apb_adapter.sv              nonempty
 tb/dpi/aes128_ref_pkg.sv                  nonempty
 tb/dpi/aes128_dpi_proto.h                 nonempty
 test/aes128_pkg.sv                        nonempty

@@ -19,6 +19,7 @@ tb/apb_agt_top/apb_sequence.sv             nonempty
 tb/tb_api/tb_api_pkg.sv                    nonempty
 tb/tb_api/tb_api_primitives.svh            nonempty
 tb/ral/uart16550_reg_block.sv              nonempty
+tb/ral/uart16550_apb_adapter.sv            nonempty
 test/uart16550_pkg.sv                      nonempty
 test/sv_list                               nonempty
 work                                       dir

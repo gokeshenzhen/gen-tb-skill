@@ -21,7 +21,8 @@ Writes:
                     apb_sequence.sv}
     tb/tb_api/{tb_api_pkg.sv, tb_api_primitives.svh}
     tb/dpi/{<ip>_ref_pkg.sv, <ip>_dpi_proto.h}     # if c_dpi
-    tb/ral/<ip>_reg_block.sv                        # basic version
+    tb/ral/<ip>_reg_block.sv
+    tb/ral/<ip>_apb_adapter.sv                      # if generating fresh APB agent
     test/<ip>_pkg.sv (sanity + reg_access + random_seq + smoke)
     test/sv_list
     work/_gen_audit/scaffold_audit.json
@@ -30,9 +31,9 @@ Symlink guard: any write target whose realpath escapes ip_root is
 refused with a non-zero exit and a message. No writes are performed
 if any target fails the guard (atomic).
 
-This file is the v1.2 first-working-draft for APB agent generation;
-corner cases (multi-clock, RAL aliasing, py_dpi, external VIP reuse)
-are still stubbed with TODO comments.
+This file is the v1.2 first-working-draft for APB agent and RAL
+generation; corner cases (multi-clock, py_dpi, full external VIP
+drive glue) are still deferred to references.
 """
 
 from __future__ import annotations
@@ -324,6 +325,7 @@ def emit_tb_f(ip: str, has_dpi: bool, vip_source: str) -> str:
     if vip_source == "generate_fresh":
         lines.insert(1, f"+incdir+{tb_root}/apb_agt_top")
         lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"{tb_root}/apb_agt_top/apb_agent.sv")
+        lines.append(f"{tb_root}/ral/{ip}_apb_adapter.sv")
     else:
         lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"-f {tb_root}/external_vip.f")
     if has_dpi:
@@ -737,33 +739,360 @@ def emit_external_vip_f(vip: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _as_int(v: Any) -> int:
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        return int(v, 0)
+    return int(v)
+
+
+def _sv_id(raw: str) -> str:
+    out = re.sub(r"\W", "_", str(raw))
+    if not out or re.match(r"\d", out):
+        out = f"_{out}"
+    return out
+
+
+def _field_range(bits: Any) -> tuple[int, int]:
+    text = str(bits).strip().strip('"')
+    if ":" in text:
+        a, b = [int(x, 0) for x in text.split(":", 1)]
+        lo, hi = min(a, b), max(a, b)
+        return lo, hi - lo + 1
+    bit = int(text, 0)
+    return bit, 1
+
+
+def _same_reg_shape(a: dict, b: dict) -> bool:
+    if _as_int(a["width"]) != _as_int(b["width"]):
+        return False
+    if a.get("access") != b.get("access"):
+        return False
+    af = a.get("fields", [])
+    bf = b.get("fields", [])
+    if len(af) != len(bf):
+        return False
+    for fa, fb in zip(af, bf):
+        if (fa.get("name"), fa.get("bits"), fa.get("access")) != (
+            fb.get("name"), fb.get("bits"), fb.get("access")
+        ):
+            return False
+    return True
+
+
+def _array_base(name: str) -> tuple[str, int] | None:
+    m = re.match(r"^(.+?)(\d+)$", name)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def _group_ral_regs(regs: list[dict]) -> list[dict]:
+    """Fold KEY0..N style runs into fixed-size RAL arrays."""
+    used: set[int] = set()
+    groups: list[dict] = []
+    by_base: dict[str, list[tuple[int, int, dict]]] = {}
+    for idx, reg in enumerate(regs):
+        parsed = _array_base(str(reg["name"]))
+        if parsed:
+            base, elem = parsed
+            by_base.setdefault(base, []).append((elem, idx, reg))
+
+    array_indices: set[int] = set()
+    array_groups: dict[int, dict] = {}
+    for base, entries in by_base.items():
+        entries = sorted(entries)
+        if len(entries) < 2 or entries[0][0] != 0:
+            continue
+        first = entries[0][2]
+        stride = _as_int(entries[1][2]["offset"]) - _as_int(first["offset"])
+        if stride <= 0:
+            continue
+        contiguous = True
+        for pos, (elem, _, reg) in enumerate(entries):
+            if elem != pos:
+                contiguous = False
+                break
+            if _as_int(reg["offset"]) != _as_int(first["offset"]) + pos * stride:
+                contiguous = False
+                break
+            if not _same_reg_shape(first, reg):
+                contiguous = False
+                break
+        if not contiguous:
+            continue
+        idxs = [idx for _, idx, _ in entries]
+        group = {
+            "kind": "array",
+            "name": base,
+            "reg": first,
+            "members": [reg for _, _, reg in entries],
+            "count": len(entries),
+            "stride": stride,
+        }
+        for idx in idxs:
+            array_groups[idx] = group
+            array_indices.add(idx)
+
+    for idx, reg in enumerate(regs):
+        if idx in used:
+            continue
+        if idx in array_indices:
+            group = array_groups[idx]
+            if idx == min(i for i, g in array_groups.items() if g is group):
+                groups.append(group)
+                used.update(i for i, g in array_groups.items() if g is group)
+            continue
+        groups.append({"kind": "single", "name": reg["name"], "reg": reg, "members": [reg]})
+        used.add(idx)
+    return groups
+
+
+def _alias_names(regs: list[dict]) -> set[str]:
+    by_offset: dict[int, list[dict]] = {}
+    aliases: set[str] = set()
+    for reg in regs:
+        if reg.get("aliased_by") not in (None, "", "null"):
+            aliases.add(str(reg["name"]))
+        by_offset.setdefault(_as_int(reg["offset"]), []).append(reg)
+    for same_addr in by_offset.values():
+        if len(same_addr) <= 1:
+            continue
+        accesses = sorted(str(r.get("access", "")).upper() for r in same_addr)
+        # RO+WO at the same address is a disjoint access pair, not bank aliasing.
+        disjoint_ro_wo = len(same_addr) == 2 and accesses == ["RO", "WO"]
+        if not disjoint_ro_wo:
+            aliases.update(str(r["name"]) for r in same_addr)
+    return aliases
+
+
+def _reg_class_name(ip: str, name: str) -> str:
+    return f"{_sv_id(ip).upper()}_{_sv_id(name).upper()}_reg"
+
+
 def emit_ral_block(ip: str, regs: list[dict]) -> str:
-    """Generate a minimal uvm_reg_block stub. Full RAL semantics
-    (aliasing, RO/WO disjoint) deferred to references/ral_gen.md
-    implementation in v1.2."""
+    """Generate a concrete UVM RAL block and a frontdoor smoke sequence."""
+    aliases = _alias_names(regs)
+    groups = _group_ral_regs(regs)
+
+    reg_classes: list[str] = []
+    declared: set[str] = set()
+    for group in groups:
+        reg = group["reg"]
+        name = str(group["name"])
+        cls = _reg_class_name(ip, name)
+        if cls in declared:
+            continue
+        declared.add(cls)
+        width = _as_int(reg["width"])
+        reg_classes += [
+            f"    class {cls} extends uvm_reg;",
+            f"        `uvm_object_utils({cls})",
+        ]
+        used_fields: set[str] = set()
+        field_ids: list[tuple[str, dict]] = []
+        for f in reg.get("fields", []):
+            fid = f"f_{_sv_id(f['name'])}"
+            if fid in used_fields:
+                fid = f"{fid}_{len(used_fields)}"
+            used_fields.add(fid)
+            field_ids.append((fid, f))
+            reg_classes.append(f"        rand uvm_reg_field {fid};")
+        reg_classes += [
+            f"",
+            f'        function new(string name="{cls}");',
+            f"            super.new(name, {width}, UVM_NO_COVERAGE);",
+            f"        endfunction",
+            f"",
+            f"        virtual function void build();",
+        ]
+        for fid, f in field_ids:
+            lsb, fwidth = _field_range(f["bits"])
+            access = str(f.get("access", reg.get("access", "RW"))).upper()
+            reset = _as_int(f.get("reset", 0))
+            is_rand = 1 if "W" in access else 0
+            reg_classes += [
+                f'            {fid} = uvm_reg_field::type_id::create("{_sv_id(f["name"])}");',
+                f"            {fid}.configure(this, {fwidth}, {lsb}, \"{access}\",",
+                f"                0, {width}'h{reset:X}, 1, {is_rand}, 1);",
+            ]
+        reg_classes += [
+            f"        endfunction",
+            f"    endclass",
+            f"",
+        ]
+
+    block_lines = [
+        f"    class {ip}_reg_block extends uvm_reg_block;",
+        f"        `uvm_object_utils({ip}_reg_block)",
+    ]
+    for group in groups:
+        name = _sv_id(group["name"])
+        cls = _reg_class_name(ip, group["name"])
+        if group["kind"] == "array":
+            block_lines.append(f"        rand {cls} {name}[{group['count']}];")
+        else:
+            block_lines.append(f"        rand {cls} {name};")
+    block_lines += [
+        f"",
+        f'        function new(string name="{ip}_reg_block");',
+        f"            super.new(name, UVM_NO_COVERAGE);",
+        f"        endfunction",
+        f"",
+        f"        virtual function void build();",
+        f'            default_map = create_map("default_map", 0, 4, UVM_LITTLE_ENDIAN);',
+    ]
+    for group in groups:
+        name = _sv_id(group["name"])
+        reg = group["reg"]
+        cls = _reg_class_name(ip, group["name"])
+        access = str(reg.get("access", "RW")).upper()
+        if group["kind"] == "array":
+            base = _as_int(reg["offset"])
+            stride = _as_int(group["stride"])
+            block_lines += [
+                f"            foreach ({name}[i]) begin",
+                f'                {name}[i] = {cls}::type_id::create($sformatf("{name}[%0d]", i));',
+                f"                {name}[i].configure(this, null, \"\");",
+                f"                {name}[i].build();",
+                f"                default_map.add_reg({name}[i], 'h{base:X} + i*'h{stride:X}, \"{access}\");",
+                f"            end",
+            ]
+        else:
+            offset = _as_int(reg["offset"])
+            block_lines += [
+                f'            {name} = {cls}::type_id::create("{name}");',
+                f"            {name}.configure(this, null, \"\");",
+                f"            {name}.build();",
+                f"            default_map.add_reg({name}, 'h{offset:X}, \"{access}\");",
+            ]
+            if str(group["name"]) in aliases:
+                block_lines.append(
+                    f'            uvm_resource_db#(bit)::set({{"REG::", {name}.get_full_name()}}, "NO_REG_ACCESS_TEST", 1, this);'
+                )
+    block_lines += [
+        f"            lock_model();",
+        f"        endfunction",
+        f"    endclass",
+        f"",
+    ]
+
+    seq_lines = [
+        f"    class {ip}_ral_access_seq extends uvm_sequence;",
+        f"        `uvm_object_utils({ip}_ral_access_seq)",
+        f"        {ip}_reg_block ral;",
+        f"",
+        f'        function new(string name="{ip}_ral_access_seq");',
+        f"            super.new(name);",
+        f"        endfunction",
+        f"",
+        f"        task body();",
+        f"            uvm_status_e status;",
+        f"            uvm_reg_data_t data;",
+        f'            if (ral == null) `uvm_fatal("RAL_ACCESS", "ral handle is null")',
+        f'            `uvm_info("RAL_ACCESS", "starting generated RAL frontdoor checks", UVM_LOW)',
+    ]
+    for group in groups:
+        reg = group["reg"]
+        name = _sv_id(group["name"])
+        access = str(reg.get("access", "RW")).upper()
+        aliased = any(str(m["name"]) in aliases for m in group["members"])
+        if aliased:
+            for member in group["members"]:
+                seq_lines.append(
+                    f'            `uvm_info("RAL_ACCESS", "Skipping aliased register {member["name"]}", UVM_LOW)'
+                )
+            continue
+        if group["kind"] == "array":
+            seq_lines += [
+                f"            foreach (ral.{name}[i]) begin",
+                f'                `uvm_info("RAL_ARRAY", $sformatf("{name}[%0d]", i), UVM_LOW)',
+            ]
+            prefix = f"ral.{name}[i]"
+            suffix = "            end"
+        else:
+            prefix = f"ral.{name}"
+            suffix = ""
+        if "R" in access:
+            seq_lines += [
+                f"                {prefix}.read(status, data, UVM_FRONTDOOR);",
+                f'                if (status != UVM_IS_OK) `uvm_error("RAL_ACCESS", "{name} read failed")',
+            ]
+        if "W" in access:
+            seq_lines += [
+                f"                data = {prefix}.get();",
+                f"                {prefix}.write(status, data, UVM_FRONTDOOR);",
+                f'                if (status != UVM_IS_OK) `uvm_error("RAL_ACCESS", "{name} write failed")',
+            ]
+        if suffix:
+            seq_lines.append(suffix)
+    seq_lines += [
+        f'            `uvm_info("RAL_ACCESS", "completed generated RAL frontdoor checks", UVM_LOW)',
+        f"        endtask",
+        f"    endclass",
+    ]
+
     lines = [
         f"`ifndef {ip.upper()}_REG_BLOCK_SV",
         f"`define {ip.upper()}_REG_BLOCK_SV",
-        f"// gen-tb minimal RAL — v1.1 stub. Full RAL generation deferred",
-        f"// to v1.2 (RAL aliasing, RO/WO disjoint handling).",
+        f"// gen-tb generated full RAL from registers.yaml.",
         f"package {ip}_ral_pkg;",
         f"    import uvm_pkg::*;",
         f'    `include "uvm_macros.svh"',
         f"",
-        f"    class {ip}_reg_block extends uvm_reg_block;",
-        f"        `uvm_object_utils({ip}_reg_block)",
-        f'        function new(string name="{ip}_reg_block"); super.new(name, UVM_NO_COVERAGE); endfunction',
-        f"        virtual function void build();",
-        f"            // TODO: instantiate {len(regs)} uvm_reg objects from registers.yaml",
-        f"            // See references/ral_gen.md for the full schema.",
-        f"            default_map = create_map(\"default_map\", 0, 4, UVM_LITTLE_ENDIAN);",
-        f"            lock_model();",
-        f"        endfunction",
-        f"    endclass",
+        *reg_classes,
+        *block_lines,
+        *seq_lines,
         f"endpackage",
         f"`endif",
     ]
     return "\n".join(lines) + "\n"
+
+
+def emit_apb_adapter(ip: str) -> str:
+    return textwrap.dedent(f"""\
+        `ifndef {ip.upper()}_APB_ADAPTER_SV
+        `define {ip.upper()}_APB_ADAPTER_SV
+        package {ip}_apb_adapter_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            import apb_agt_pkg::*;
+            `include "uvm_macros.svh"
+
+            class {ip}_apb_adapter extends uvm_reg_adapter;
+                `uvm_object_utils({ip}_apb_adapter)
+
+                function new(string name = "{ip}_apb_adapter");
+                    super.new(name);
+                    supports_byte_enable = 0;
+                    provides_responses   = 0;
+                endfunction
+
+                virtual function uvm_sequence_item reg2bus(const ref uvm_reg_bus_op rw);
+                    apb_trans t = apb_trans::type_id::create("t");
+                    t.addr  = rw.addr[ADDR_W-1:0];
+                    t.data  = rw.data[DATA_W-1:0];
+                    t.write = (rw.kind == UVM_WRITE);
+                    return t;
+                endfunction
+
+                virtual function void bus2reg(uvm_sequence_item bus_item, ref uvm_reg_bus_op rw);
+                    apb_trans t;
+                    if (!$cast(t, bus_item)) begin
+                        `uvm_error("RAL_ADAPTER", "bus_item is not apb_trans")
+                        rw.status = UVM_NOT_OK;
+                        return;
+                    end
+                    rw.kind   = t.write ? UVM_WRITE : UVM_READ;
+                    rw.addr   = t.addr;
+                    rw.data   = t.write ? t.data : t.rdata;
+                    rw.status = t.slverr ? UVM_NOT_OK : UVM_IS_OK;
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
 
 
 def emit_dpi_ref_pkg(ip: str, dpi: dict) -> str:
@@ -867,21 +1196,6 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         endclass
         """)
 
-    reg_access_test = textwrap.dedent(f"""\
-        class {ip}_reg_access_test extends uvm_test;
-            `uvm_component_utils({ip}_reg_access_test)
-            function new(string n="{ip}_reg_access_test", uvm_component p=null); super.new(n,p); endfunction
-            task run_phase(uvm_phase phase);
-                phase.raise_objection(this);
-                wait (tb_api::vif.presetn === 1'b1);
-                repeat (4) @(posedge tb_api::vif.pclk);
-                // Full RAL walk (write/read/check) remains a v1.2 follow-up.
-                run_reg_access_reads("REG_ACCESS");
-                phase.drop_objection(this);
-            endtask
-        endclass
-        """)
-
     random_seq_test = textwrap.dedent(f"""\
         class {ip}_random_seq_test extends uvm_test;
             `uvm_component_utils({ip}_random_seq_test)
@@ -922,7 +1236,61 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
 
     vip_source = intake.get("apb_vip_source", "generate_fresh")
     agent_import = "    import apb_agt_pkg::*;" if vip_source == "generate_fresh" else ""
+    ral_import = f"    import {ip}_ral_pkg::*;"
+    adapter_import = f"    import {ip}_apb_adapter_pkg::*;" if vip_source == "generate_fresh" else ""
     random_seq_body = random_seq_test if vip_source == "generate_fresh" else ""
+    if vip_source == "generate_fresh":
+        reg_access_test = textwrap.dedent(f"""\
+            class {ip}_reg_access_test extends uvm_test;
+                `uvm_component_utils({ip}_reg_access_test)
+                apb_agent         agent;
+                apb_agt_config    cfg;
+                {ip}_reg_block    ral;
+                {ip}_apb_adapter  adapter;
+
+                function new(string n="{ip}_reg_access_test", uvm_component p=null);
+                    super.new(n,p);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    cfg = apb_agt_config::type_id::create("cfg");
+                    cfg.vif = tb_api::vif;
+                    uvm_config_db#(apb_agt_config)::set(this, "agent", "cfg", cfg);
+                    agent = apb_agent::type_id::create("agent", this);
+                    ral = {ip}_reg_block::type_id::create("ral");
+                    ral.build();
+                    adapter = {ip}_apb_adapter::type_id::create("adapter");
+                endfunction
+
+                task run_phase(uvm_phase phase);
+                    {ip}_ral_access_seq seq;
+                    phase.raise_objection(this);
+                    wait (tb_api::vif.presetn === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.pclk);
+                    ral.default_map.set_sequencer(agent.sqr, adapter);
+                    ral.default_map.set_auto_predict(1);
+                    seq = {ip}_ral_access_seq::type_id::create("seq");
+                    seq.ral = ral;
+                    seq.start(null);
+                    phase.drop_objection(this);
+                endtask
+            endclass
+            """)
+    else:
+        reg_access_test = textwrap.dedent(f"""\
+            class {ip}_reg_access_test extends uvm_test;
+                `uvm_component_utils({ip}_reg_access_test)
+                function new(string n="{ip}_reg_access_test", uvm_component p=null); super.new(n,p); endfunction
+                task run_phase(uvm_phase phase);
+                    phase.raise_objection(this);
+                    wait (tb_api::vif.presetn === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.pclk);
+                    run_reg_access_reads("REG_ACCESS");
+                    phase.drop_objection(this);
+                endtask
+            endclass
+            """)
 
     return textwrap.dedent(f"""\
         `ifndef {ip.upper()}_PKG_SV
@@ -930,6 +1298,8 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         package {ip}_pkg;
             import uvm_pkg::*;
         {agent_import}
+        {ral_import}
+        {adapter_import}
         {f'    import {ip}_ref_pkg::*;' if dpi else ''}
             `include "uvm_macros.svh"
 
@@ -1015,6 +1385,8 @@ def main() -> int:
     else:
         plan.append((ip_root / "tb" / "external_vip.f", emit_external_vip_f(external_vip), False))
     plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
+    if vip_source == "generate_fresh":
+        plan.append((ip_root / "tb" / "ral" / f"{ip}_apb_adapter.sv", emit_apb_adapter(ip), False))
 
     if has_dpi:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_ref_pkg.sv", emit_dpi_ref_pkg(ip, dpi), False))

@@ -16,6 +16,7 @@
         {"name": "sanity_passes",            "kind": "sim_passes",     "test": "uart16550_sanity_test"},
         {"name": "sanity_positive_check_hit", "kind": "log_contains",  "test": "uart16550_sanity_test", "needle": "= 0x000000c1"},
         {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "uart16550_reg_access_test"},
+        {"name": "ral_skips_dlab_alias",     "kind": "log_contains",   "test": "uart16550_reg_access_test", "needle": "Skipping aliased register RBR"},
         {"name": "random_seq_runs",          "kind": "sim_passes",     "test": "uart16550_random_seq_test"},
         {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
       ]
@@ -34,6 +35,7 @@
         {"name": "no_compile_warnings",          "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
         {"name": "sanity_passes",                "kind": "sim_passes",     "test": "aes128_sanity_test"},
         {"name": "sanity_reads_name0",           "kind": "log_contains",   "test": "aes128_sanity_test", "needle": "= 0x61657320"},
+        {"name": "ral_key_array_accessed",        "kind": "log_contains",   "test": "aes128_reg_access_test", "needle": "RAL_ARRAY"},
         {"name": "random_seq_runs",              "kind": "sim_passes",     "test": "aes128_random_seq_test"},
         {"name": "no_fixture_pollution",         "kind": "fixture_unchanged"}
       ]
