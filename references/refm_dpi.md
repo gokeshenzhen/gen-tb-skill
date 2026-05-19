@@ -12,16 +12,12 @@
 The aes128 v1 dry-run validated end-to-end DPI flow but exposed five
 specific gaps:
 
-- [G26](../docs/aes128_dryrun_v1_gaps.md): intake schema undocumented
-  for DPI
-- [G27](../docs/aes128_dryrun_v1_gaps.md): Makefile DPI section
-  invented per IP
-- [G28](../docs/aes128_dryrun_v1_gaps.md): DPI signature triple-sourced
-  (intake.yaml, .sv, .c) with no sync
-- [G29](../docs/aes128_dryrun_v1_gaps.md): STATUS reset semantics
-  break naive polling loops
-- [G31](../docs/aes128_dryrun_v1_gaps.md): only one scoreboard mode
-  shown
+- intake schema was undocumented for DPI
+- Makefile DPI sections were being invented per IP
+- DPI signatures were triple-sourced in `intake.yaml`, SV, and C with
+  no sync point
+- STATUS reset semantics could break naive polling loops
+- only one scoreboard mode had been described
 
 This file gives one canonical contract that closes all five.
 
@@ -254,8 +250,9 @@ A `<ip>_sb` `uvm_scoreboard` subscribes to:
 - a refm callback (when the test enqueues an input, the refm
   computes the expected immediately and pushes to a queue)
 
-Mismatches reported transaction-by-transaction. Skeleton in
-`assets/templates/sb_stream.sv.tmpl`.
+Mismatches are reported transaction-by-transaction. Generate this
+scoreboard under `tb/scoreboard/`; do not put scoreboard components
+under `test/`.
 
 ## Limitations / v1.2 candidates
 

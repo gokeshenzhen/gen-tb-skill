@@ -89,8 +89,9 @@ memory.
 When the user's `rtl/` directory is a read-only symlink (e.g., into
 an IP library), gen-tb cannot write `rtl/design.f` there. The Makefile
 contract therefore puts `design.f` in `script/` — gen-tb-owned space
-that's always writable. See G11 in `docs/uart16550_dryrun_gaps.md`
-for the incident that drove this rule.
+that's always writable. This rule came from the uart16550 dry-run,
+where writing a generated file into a user-owned `rtl/` symlink was
+both fragile and semantically wrong.
 
 ## Adding a target (forward-compat)
 

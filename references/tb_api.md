@@ -7,10 +7,10 @@
 
 ## Why this file exists
 
-The uart16550 v1 dry-run surfaced [G19](../docs/uart16550_dryrun_v1_gaps.md):
-a hand-rolled `apb_read` task returned wrong data because of a one-cycle
-sampling race against the DUT's registered output. **gen-tb must not let
-each invocation reinvent the APB read primitive** — it's load-bearing for
+The uart16550 dry-run exposed a real APB sampling bug: a hand-rolled
+`apb_read` task returned wrong data because of a one-cycle sampling race
+against the DUT's registered output. **gen-tb must not let each
+invocation reinvent the APB read primitive** — it's load-bearing for
 every generated tb's sanity test.
 
 This file provides one *known-good* implementation that gen-tb emits
