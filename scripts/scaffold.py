@@ -774,10 +774,12 @@ def _same_reg_shape(a: dict, b: dict) -> bool:
     if len(af) != len(bf):
         return False
     for fa, fb in zip(af, bf):
-        if (fa.get("name"), fa.get("bits"), fa.get("access")) != (
-            fb.get("name"), fb.get("bits"), fb.get("access")
+        if (fa.get("name"), fa.get("bits"), fa.get("access"), fa.get("reset")) != (
+            fb.get("name"), fb.get("bits"), fb.get("access"), fb.get("reset")
         ):
             return False
+    if _as_int(a.get("reset", 0)) != _as_int(b.get("reset", 0)):
+        return False
     return True
 
 
@@ -792,8 +794,24 @@ def _group_ral_regs(regs: list[dict]) -> list[dict]:
     """Fold KEY0..N style runs into fixed-size RAL arrays."""
     used: set[int] = set()
     groups: list[dict] = []
+    explicit_array_groups: dict[int, dict] = {}
+    for idx, reg in enumerate(regs):
+        if reg.get("array_of") not in (None, "", "null"):
+            count = _as_int(reg["array_of"])
+            stride = _as_int(reg.get("stride", _as_int(reg["width"]) // 8))
+            explicit_array_groups[idx] = {
+                "kind": "array",
+                "name": reg["name"],
+                "reg": reg,
+                "members": [reg],
+                "count": count,
+                "stride": stride,
+            }
+
     by_base: dict[str, list[tuple[int, int, dict]]] = {}
     for idx, reg in enumerate(regs):
+        if idx in explicit_array_groups:
+            continue
         parsed = _array_base(str(reg["name"]))
         if parsed:
             base, elem = parsed
@@ -837,6 +855,10 @@ def _group_ral_regs(regs: list[dict]) -> list[dict]:
 
     for idx, reg in enumerate(regs):
         if idx in used:
+            continue
+        if idx in explicit_array_groups:
+            groups.append(explicit_array_groups[idx])
+            used.add(idx)
             continue
         if idx in array_indices:
             group = array_groups[idx]

@@ -101,7 +101,7 @@ def _emit_audit_inputs(eval_def: dict, ip_root: Path):
     # registers.yaml — parse from the fixture xlsx
     xlsx_candidates = list((fixture_root / "spec").glob("*_regs.xlsx"))
     if xlsx_candidates:
-        parse_xlsx_to_yaml(xlsx_candidates[0], norm / "registers.yaml")
+        parse_xlsx_to_yaml(xlsx_candidates[0], norm / "registers.yaml", norm / "parse_report.md")
     emit_behavior_and_report(name, fixture_root / "spec", norm, audit / "intake.yaml")
 
 

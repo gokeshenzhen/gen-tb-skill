@@ -86,7 +86,16 @@ def emit_behavior_and_report(
 - behavior.md is a conservative skeleton.
 """
     (out_dir / "behavior.md").write_text(behavior)
-    (out_dir / "parse_report.md").write_text(report)
+    report_path = out_dir / "parse_report.md"
+    if report_path.exists():
+        with report_path.open("a") as f:
+            f.write(
+                "\n## Behavior parser\n"
+                f"- Lightweight parse_spec.py did not infer algorithmic behavior for {ip_name}.\n"
+                f"- Reference model language/source/trust: {ref_lang}/{ref_source}/{ref_trust}.\n"
+            )
+    else:
+        report_path.write_text(report)
 
 
 def main() -> int:
