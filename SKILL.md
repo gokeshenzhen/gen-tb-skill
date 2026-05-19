@@ -281,6 +281,42 @@ Load only the relevant file for the current phase.
 | `references/sub_agent_compile_fix.md` | compile-fix sub-agent |
 | `references/generated_claude_md.md` | generated CLAUDE.md |
 
+## Evaluation
+
+This skill ships with a three-layer eval harness under `evals/`. See
+`evals/README.md` for the operator-facing walkthrough; the contract
+below is what the skill promises.
+
+1. **Mechanical assertions** (`scripts/run_evals.py run`) —
+   compile/sim must exit clean, log substrings must hit, generated
+   files must exist. Deterministic, no LLM. Always run after a change
+   to the skill or scaffolder. Per-eval artifacts land in
+   `evals/iteration-N/<eval-name>/` (`outputs/`, `transcript.md`,
+   `assertions_result.json`).
+
+2. **Per-run quality Grader** (`run_evals.py run --grade`) —
+   `claude -p` subprocess that reads `evals/agents/grader.md` and
+   judges 8 quality dimensions assertions can't catch (scoreboard
+   value, RAL fidelity, `tb_api::` BFM usability, hardcoding risk,
+   `unresolved.md` honesty, …). Writes `grading.json` per eval with
+   `strong/ok/weak/broken` verdicts and severity counts. Always run
+   when iterating on the skill.
+
+3. **Optional Comparator + Analyzer** (`run_evals.py compare A B
+   --analyze`) — blind A/B between two iterations or candidate
+   variants. Most iterations don't need this — mechanical assertions
+   plus the Grader catch regressions. Use Comparator when you want a
+   stronger statement that "vN is genuinely better than vN-1" (e.g.
+   before promoting a major rewrite, or to pick between two candidate
+   skill variants). Analyzer runs after Comparator picks a non-tie
+   winner and writes `<eval>.analysis.md` with root-cause hypotheses
+   and concrete suggested edits to this SKILL.md or `references/`.
+
+The three agent contracts live in `evals/agents/{grader,comparator,
+analyzer}.md`. They are written so the same contracts can be invoked
+by the harness (`claude -p`) or by a conversational Claude via the
+Task tool — pick whichever fits the iteration loop.
+
 ## Done Checklist
 
 - `<ip>/.prj_top` exists
