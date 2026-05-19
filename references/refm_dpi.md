@@ -3,8 +3,9 @@
 > Loaded during Phase 3 (intake schema lookup) and Phase 4 (DPI
 > artifact generation). Applies when
 > `intake.yaml: ref_model_language ∈ {c_dpi, py_dpi}`. For SV-only
-> reference models, see `references/ral_gen.md` (the model is just
-> another component in the env).
+> user-provided reference models, record `sv_ref_class` in
+> `intake.yaml`. Register-level spec-derived behavior belongs in the
+> generated RAL/reg block, not in a duplicate reference-model component.
 
 ## Why this file exists
 
