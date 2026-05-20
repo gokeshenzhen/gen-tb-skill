@@ -20,3 +20,5 @@ plan/
 .vscode/
 .DS_Store
 *.swp
+CLAUDE.md
+AGENTS.md
