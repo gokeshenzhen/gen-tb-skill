@@ -118,6 +118,94 @@ def _resolve_input_path(raw: str, ip_root: Path) -> Path:
     return Path(expanded).expanduser().resolve()
 
 
+def _uniq_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def _expand_vip_vars(raw: str, env: dict[str, str]) -> str:
+    out = raw.strip().strip('"').strip("'")
+    for _ in range(8):
+        prev = out
+
+        def repl_braced(match: re.Match[str]) -> str:
+            return env.get(match.group(1), match.group(0))
+
+        out = re.sub(r"\$\{([A-Za-z_]\w*)\}", repl_braced, out)
+        out = re.sub(r"\$\(([A-Za-z_]\w*)\)", repl_braced, out)
+        out = re.sub(r"\$([A-Za-z_]\w*)", repl_braced, out)
+        if out == prev:
+            break
+    return out
+
+
+def _vip_env_from_setup(vip_root: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    for setup in sorted(vip_root.rglob("*setup*.cshrc")):
+        for line in setup.read_text(errors="ignore").splitlines():
+            match = re.match(r"\s*setenv\s+([A-Za-z_]\w*)\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            key, value = match.groups()
+            env[key] = _expand_vip_vars(value, env)
+    return env
+
+
+def _path_from_vip_token(raw: str, env: dict[str, str], base: Path) -> Path | None:
+    token = raw.strip()
+    if not token or token.startswith("#") or token.startswith("//"):
+        return None
+    expanded = _expand_vip_vars(token, env)
+    if "$" in expanded:
+        return None
+    path = Path(expanded).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
+def _scan_vip_filelists(vip_root: Path, env: dict[str, str]) -> tuple[list[Path], list[Path]]:
+    compile_units: list[Path] = []
+    incdirs: list[Path] = []
+
+    for mk in sorted(vip_root.rglob("*.mk")):
+        for inc in re.findall(r"-incdir\s+(\S+)", mk.read_text(errors="ignore")):
+            path = _path_from_vip_token(inc, env, mk.parent)
+            if path:
+                incdirs.append(path)
+
+    for flist in sorted(vip_root.glob("*.f")):
+        for raw_line in flist.read_text(errors="ignore").splitlines():
+            line = raw_line.split("//", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("+incdir+"):
+                path = _path_from_vip_token(line[len("+incdir+"):], env, flist.parent)
+                if path:
+                    incdirs.append(path)
+                continue
+            if line.startswith("-incdir"):
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2:
+                    path = _path_from_vip_token(parts[1], env, flist.parent)
+                    if path:
+                        incdirs.append(path)
+                continue
+            if line.startswith("+") or line.startswith("-"):
+                continue
+            path = _path_from_vip_token(line, env, flist.parent)
+            if path:
+                compile_units.append(path)
+
+    return _uniq_paths(compile_units), _uniq_paths(incdirs)
+
+
 def _scan_external_vip(raw_path: str, ip_root: Path, bus: str) -> dict[str, Any]:
     vip_root = _resolve_input_path(raw_path, ip_root)
     if not vip_root.is_dir():
@@ -127,12 +215,17 @@ def _scan_external_vip(raw_path: str, ip_root: Path, bus: str) -> dict[str, Any]
     if not sv_files:
         sys.exit(f"FATAL: no SystemVerilog files found under {bus}_vip_path: {vip_root}")
 
+    svh_files = sorted(vip_root.rglob("*.svh"))
+    scanned_files = sv_files + svh_files
+    vip_env = _vip_env_from_setup(vip_root)
+    filelist_units, filelist_incdirs = _scan_vip_filelists(vip_root, vip_env)
+
     packages: list[tuple[str, Path]] = []
     agents: list[tuple[str, Path]] = []
     transactions: list[tuple[str, Path]] = []
     configs: list[tuple[str, Path]] = []
     interfaces: list[tuple[str, Path]] = []
-    for path in sv_files:
+    for path in scanned_files:
         text = path.read_text(errors="ignore")
         for name in re.findall(r"\bpackage\s+([A-Za-z_]\w*)\s*;", text):
             packages.append((name, path))
@@ -150,12 +243,14 @@ def _scan_external_vip(raw_path: str, ip_root: Path, bus: str) -> dict[str, Any]
 
     package_units = sorted({p for _, p in packages})
     interface_units = sorted({p for _, p in interfaces})
-    if package_units:
+    if filelist_units:
+        compile_units = filelist_units
+    elif package_units:
         compile_units = interface_units + [p for p in package_units if p not in interface_units]
     else:
         compile_units = sv_files
 
-    incdirs = sorted({p.parent for p in sv_files})
+    incdirs = sorted({vip_root, *filelist_incdirs, *(p.parent for p in scanned_files)})
     return {
         "root": vip_root,
         "packages": [{"name": n, "path": str(p)} for n, p in packages],
