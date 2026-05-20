@@ -10,9 +10,14 @@ turn into a passing UVM testbench.
 |---|---|---|---|---|
 | `uart16550` | Peripheral | APB (via wrapper over OpenCores Wishbone core) | none | No (see LICENSE.notes) |
 | `aes128` | Algorithmic | APB (via wrapper over secworks core) | C-DPI | Yes |
+| `axi_lite_simple_slave` | Peripheral | AXI4-Lite slave (2 regs) | none | Yes |
+| `axi_lite_simple_master` | Bus master | AXI4-Lite master (one-shot write) | none | Yes |
 
-DMA / bus-master class fixtures are deferred until a full bus-master
-evaluation path exists.
+The two AXI4-Lite fixtures exercise both directions: DUT-as-slave
+(generated master BFM + RAL + reg_access) and DUT-as-master (memory-
+backed slave responder + `<ip>_responder_smoke_test`). The
+`axi_lite_simple_slave` fixture also ships a stub `user_axi_lite_vip/`
+package that drives the `reuse_my_vip` eval path.
 
 ## Adding a new fixture
 
@@ -23,7 +28,8 @@ A fixture is a directory containing:
 ├── README.md              # provenance, license, what it exercises
 ├── LICENSE                # original upstream license (if applicable)
 ├── rtl/                   # synthesizable RTL — must include any
-│                          # wrapper that presents an APB or AHB-Lite slave
+│                          # wrapper that presents an APB / AHB-Lite slave
+│                          # or AXI4-Lite (slave or master) interface
 ├── spec/
 │   ├── <name>_spec.{md,pdf,docx}    # at least one behavior doc
 │   └── <name>_regs.{xlsx,csv,md}    # register table
@@ -33,10 +39,11 @@ A fixture is a directory containing:
     └── sanity.json        # which sanity cases must pass
 ```
 
-The fixture's RTL **must present an APB or AHB-Lite slave interface to the
+The fixture's RTL **must present one of the supported bus interfaces
+(APB slave, AHB-Lite slave, or AXI4-Lite slave/master) to the
 testbench-facing side** (wrappers are part of the fixture, written by
-us; the upstream RTL is treated as a black box). AXI-Lite remains out
-of scope.
+us; the upstream RTL is treated as a black box). AXI4 full (bursts,
+IDs, outstanding) remains out of scope.
 
 Also update:
 - `evals/fixtures/LICENSE.notes.md` with the new license row

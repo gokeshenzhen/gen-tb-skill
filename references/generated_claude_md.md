@@ -50,7 +50,7 @@ not a golden implementation.
 ## Current Configuration
 
 - IP: `<ip>`
-- Bus: `<APB slave | AHB-Lite slave>`
+- Bus: `<APB slave | AHB-Lite slave | AXI4-Lite slave | AXI4-Lite master>`
 - Simulator: VCS
 - UVM: `<uvm_version>`
 - Bus VIP source: `<generate_fresh | reuse_my_vip>`
@@ -68,10 +68,17 @@ make all SV_CASE=<ip>_sanity_test
 make all SV_CASE=<ip>_reg_access_test
 ```
 
-Generated APB-agent mode may also include:
+Generated APB / AHB / AXI4-Lite-slave agent mode may also include:
 
 ```bash
 make all SV_CASE=<ip>_random_seq_test
+```
+
+For AXI4-Lite master DUT, the mandatory test is the responder smoke
+instead of `reg_access` (no RAL):
+
+```bash
+make all SV_CASE=<ip>_responder_smoke_test
 ```
 
 ## Important Files

@@ -39,7 +39,9 @@ rtl_discovery.yaml:
 ## Stub Scope
 
 The stub is a bus-facing APB slave shell, not an implementation of the
-IP's real behavior.
+IP's real behavior. AHB-Lite and AXI4-Lite stub generation are not yet
+in scope — for those buses, ask the user for real RTL or an external
+filelist; do not fabricate a stub.
 
 It may implement:
 

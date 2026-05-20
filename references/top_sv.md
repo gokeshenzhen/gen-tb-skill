@@ -1,7 +1,8 @@
 # Generated top.sv rules (gen-tb reference)
 
 > Loaded during Phase 4 scaffold and Phase 5 compile-fix. Defines how
-> `top/<ip>_tb_top.sv` connects the generated APB or AHB testbench to user RTL.
+> `top/<ip>_tb_top.sv` connects the generated APB, AHB-Lite, or
+> AXI4-Lite testbench to user RTL.
 
 ## Ownership
 
@@ -118,6 +119,32 @@ For `bus_protocol: ahb`, the canonical AHB-Lite connection is:
 .<hready>  (ahb.hready),
 .<hresp>   (ahb.hresp)
 ```
+
+## DUT AXI4-Lite Wiring
+
+For `bus_protocol: axi_lite`, the canonical connection covers all five
+channels (AW / W / B / AR / R). Same wiring regardless of
+`bus_direction` — only the role of TB vs DUT changes, the signal map
+does not:
+
+```systemverilog
+.<aclk>    (aclk),
+.<aresetn> (aresetn),
+.<awvalid> (axi.awvalid), .<awready> (axi.awready),
+.<awaddr>  (axi.awaddr),  .<awprot>  (axi.awprot),
+.<wvalid>  (axi.wvalid),  .<wready>  (axi.wready),
+.<wdata>   (axi.wdata),   .<wstrb>   (axi.wstrb),
+.<bvalid>  (axi.bvalid),  .<bready>  (axi.bready),
+.<bresp>   (axi.bresp),
+.<arvalid> (axi.arvalid), .<arready> (axi.arready),
+.<araddr>  (axi.araddr),  .<arprot>  (axi.arprot),
+.<rvalid>  (axi.rvalid),  .<rready>  (axi.rready),
+.<rdata>   (axi.rdata),   .<rresp>   (axi.rresp)
+```
+
+`bus_direction: slave` means TB owns master-side drives (aw*/w*/ar*/
+bready/rready); `bus_direction: master` means TB owns slave-side
+drives (awready/wready/b*/arready/r*).
 
 ## Non-bus Pads (G4)
 
@@ -237,6 +264,7 @@ Before accepting generated top:
 - `references/apb.md` — generated APB interface/agent behavior
 - `references/apb_external_vip.md` — external VIP bridge boundary
 - `references/ahb.md` — generated AHB interface/agent behavior
+- `references/axi_lite.md` — generated AXI4-Lite interface/agent behavior (slave + master)
 - `references/ahb_external_vip.md` — external VIP bridge boundary
 - `references/tb_api.md` — DE BFM virtual interface handoff
 - `scripts/scaffold.py` `emit_tb_top` — current implementation

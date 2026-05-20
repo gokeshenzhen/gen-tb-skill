@@ -12,7 +12,7 @@ Write:
 work/_gen_audit/rtl_discovery.yaml
 ```
 
-This file records the exact RTL files, top module, APB/AHB signal names,
+This file records the exact RTL files, top module, APB/AHB/AXI4-Lite signal names,
 non-bus pads, and any wrapper address mapping. It is generated from user
 RTL or user filelists. Do not edit user RTL to make discovery easier.
 
@@ -79,6 +79,38 @@ ahb_interface:
   hready: hready
   hresp: hresp
 ```
+
+For AXI4-Lite, use:
+
+```yaml
+axi_lite_interface:
+  direction: slave              # slave (DUT is slave) | master (DUT is master)
+  aclk: aclk
+  aresetn: aresetn
+  awvalid: awvalid
+  awready: awready
+  awaddr:  {name: awaddr,  width: 12}
+  awprot:  awprot
+  wvalid:  wvalid
+  wready:  wready
+  wdata:   {name: wdata,  width: 32}
+  wstrb:   {name: wstrb,  width: 4}
+  bvalid:  bvalid
+  bready:  bready
+  bresp:   bresp
+  arvalid: arvalid
+  arready: arready
+  araddr:  {name: araddr,  width: 12}
+  arprot:  arprot
+  rvalid:  rvalid
+  rready:  rready
+  rdata:   {name: rdata,  width: 32}
+  rresp:   rresp
+```
+
+`direction` controls which side of the bus the TB owns; it is
+load-bearing for both `tb_api` primitives and the generated agent
+(master BFM vs slave responder).
 
 `scripts/scaffold.py` currently consumes `top_module.name`,
 `files[*].path`, `rtl_dir`, the bus interface block, and `other_pads`.
@@ -192,6 +224,30 @@ Match common variants only for discovery:
 | `hrdata` | `HRDATA`, `rdata`, `ahb_rdata` |
 | `hready` | `HREADY`, `ready`, `ahb_ready` |
 | `hresp` | `HRESP`, `resp`, `error` |
+
+## AXI4-Lite Port Discovery
+
+The generated top expects AXI4-Lite signals across five channels (AW /
+W / B / AR / R), independent of `bus_direction`:
+
+- clock/reset: `aclk`, `aresetn`
+- AW: `awvalid`, `awready`, `awaddr`, `awprot`
+- W:  `wvalid`,  `wready`,  `wdata`,  `wstrb`
+- B:  `bvalid`,  `bready`,  `bresp`
+- AR: `arvalid`, `arready`, `araddr`, `arprot`
+- R:  `rvalid`,  `rready`,  `rdata`,  `rresp`
+
+`bus_direction` is recorded in `axi_lite_interface.direction` and
+determines which side of the bus the TB owns (`slave` → DUT is slave,
+TB master BFM; `master` → DUT is master, TB slave responder). The
+signal map itself does not change.
+
+Common variants to match during discovery: any of the canonical names
+plus `_i`/`_o` suffixes, all-caps forms (`AWVALID` …), or AXI4 names
+with `axi_` prefix (`axi_awvalid` …). Do not normalize case in the
+emitted names. AXI4 burst/ID signals (`awlen`, `awid`, …), if present,
+flag as out-of-scope and ask the user to confirm the IP is truly
+AXI4-Lite-only.
 
 ## Non-bus Pads
 

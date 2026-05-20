@@ -14,12 +14,23 @@ invocation reinvent the APB read primitive** — it's load-bearing for
 every generated tb's sanity test.
 
 This file provides the APB *known-good* implementation. For
-`bus_protocol: ahb`, `scripts/scaffold.py` emits the AHB-Lite variant
-described in `references/ahb.md` with the same public
+`bus_protocol: ahb` and `bus_protocol: axi_lite`, `scripts/scaffold.py`
+emits the matching variant described in `references/ahb.md` /
+`references/axi_lite.md` with the same public
 `tb_api::write/read/expect_reg` surface. Generation only parameterizes
 the package header and selects the bus-specific primitive body. The
 AHB read primitive samples `hrdata` after `hready` has settled to avoid
-the same-cycle NBA race seen in the reused AHB VIP flow.
+the same-cycle NBA race seen in the reused AHB VIP flow. The AXI4-Lite
+primitives use `@(posedge clk iff valid && ready)` inside a fork-join
+to track the AW/W/B and AR/R handshakes without racing the responder.
+
+For `bus_protocol: axi_lite` with `bus_direction: master` (DUT is
+master), `tb_api::` exposes responder-side helpers instead of write/
+read: `seed_mem`, `peek_mem`, `wait_for_write`, `wait_for_read`,
+`expect_observed_write`, and `clear_observed`. The shared `_mem`
+associative array and `*_observed` counters are updated by the
+generated slave responder driver; tests poll them to assert what the
+DUT initiated.
 
 ## Package skeleton
 

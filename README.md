@@ -12,8 +12,9 @@ register table (xlsx / csv / md / IP-XACT). Targets dual personas:
 
 **Pre-alpha implementation** — the skill entry point and the core
 scaffold/eval scripts are present. The current implementation targets
-APB-slave and AHB-Lite-slave IPs; local regression fixtures currently
-exercise the APB path.
+APB-slave, AHB-Lite-slave, and AXI4-Lite IPs (DUT-as-slave or
+DUT-as-master). Local regression fixtures exercise all three bus
+protocols plus external-VIP reuse.
 
 Currently in this repo:
 
@@ -40,6 +41,8 @@ gen-tb/
 │   ├── apb_external_vip.md
 │   ├── ahb.md             # AHB-Lite agent generation rules
 │   ├── ahb_external_vip.md
+│   ├── axi_lite.md        # AXI4-Lite agent generation rules (slave + master)
+│   ├── axi_lite_external_vip.md
 │   ├── ral_gen.md
 │   ├── refm_dpi.md        # C/Python DPI ref model integration
 │   ├── tb_api.md          # DE-friendly task BFM
@@ -71,7 +74,7 @@ The skill always materializes the same directory shape (modeled on
 
 | Dimension | Scope |
 |---|---|
-| Bus protocol | APB, AHB-Lite (AXI-Lite planned) |
+| Bus protocol | APB slave, AHB-Lite slave, AXI4-Lite (slave or master); AXI4 full planned |
 | Simulator | VCS only (xrun / questa planned) |
 | Ref model lang | none / SV / C-DPI; Python-DPI schema only |
 | RAL input | xlsx / csv / md tables / IP-XACT |
