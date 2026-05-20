@@ -120,6 +120,22 @@ def _validate_intake(intake: dict) -> None:
         sys.exit(f"FATAL: unsupported {bus}_vip_reuse_level: {reuse_level!r}")
     if vip_source != "reuse_my_vip" and f"{bus}_vip_reuse_level" in intake:
         sys.exit(f"FATAL: {bus}_vip_reuse_level is valid only with reuse_my_vip")
+    if (
+        bus in ("axi_lite", "ahb")
+        and intake.get("bus_direction", "slave") == "master"
+        and vip_source == "reuse_my_vip"
+        and reuse_level == "import_only"
+    ):
+        sys.exit(
+            f"FATAL: bus_direction: master + {bus}_vip_source: reuse_my_vip + "
+            "import_only is not supported. The built-in responder_smoke_test "
+            "relies on the generated slave responder driver to populate "
+            "tb_api state; import-only reuse skips that driver but the "
+            "generated test_pkg still references the fresh agent symbols. "
+            f"Either use {bus}_vip_reuse_level: drive_with_vip (Phase 5 "
+            "generates glue against the user VIP), or switch to "
+            f"{bus}_vip_source: generate_fresh."
+        )
 
 
 def _resolve_input_path(raw: str, ip_root: Path) -> Path:

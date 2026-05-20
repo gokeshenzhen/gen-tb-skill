@@ -31,6 +31,15 @@ Those packages often re-include internal env/test files and assume the VIP's
 standalone top. Generated sanity and register tests should stay on `tb_api`
 until a project-local `drive_with_vip` glue layer is added.
 
+For `bus_direction: master`, the user VIP must supply a slave
+responder agent. The combination
+`bus_direction: master + ahb_vip_source: reuse_my_vip +
+ahb_vip_reuse_level: import_only` is explicitly rejected by
+`scaffold.py` — the built-in `<ip>_responder_smoke_test` relies on the
+generated responder to populate `tb_api::_mem` and `writes_observed`,
+which `import_only` skips. Use `drive_with_vip` (Phase 5 generates
+glue against the user VIP) or `generate_fresh` instead.
+
 If the VIP needs a specific interface name, config key, package import,
 or factory type, implement that as generated glue under `tb/`, `top/`,
 or `test/` during compile-fix. Do not patch the VIP in place unless the

@@ -37,7 +37,13 @@ files and assume the VIP's standalone top. Generated sanity / register
 
 For `bus_direction: master`, the user VIP must supply a slave responder
 agent; gen-tb does not auto-build a memory-backed responder from a
-master-only third-party VIP.
+master-only third-party VIP. The combination
+`bus_direction: master + axi_lite_vip_source: reuse_my_vip +
+axi_lite_vip_reuse_level: import_only` is explicitly rejected by
+`scaffold.py` — the built-in `<ip>_responder_smoke_test` relies on the
+generated responder to populate `tb_api::_mem` and `writes_observed`,
+which `import_only` skips. Use `drive_with_vip` (Phase 5 generates
+glue against the user VIP) or `generate_fresh` instead.
 
 If the VIP needs a specific interface name, config key, package import,
 or factory type, implement that as generated glue under `tb/`, `top/`,
