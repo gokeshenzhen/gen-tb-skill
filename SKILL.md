@@ -106,6 +106,8 @@ apb_vip_reuse_level: import_only   # or ahb_vip_reuse_level; default
 keeps built-in tests on `tb_api`. `drive_with_vip` means Phase 5 must
 also generate/adapt glue so the user's VIP can drive a minimal bus
 read/write smoke sequence. Do not guess third-party VIP APIs in Phase 4.
+For `import_only`, scaffold may skip vendor `*_test_pkg.sv` files that
+only serve the VIP's standalone harness.
 
 Load `references/apb_external_vip.md` or `references/ahb_external_vip.md`
 before implementing or fixing external VIP reuse.
