@@ -107,6 +107,7 @@ def render_rtl_discovery(
     elif bus == "ahb":
         lines += [
             "ahb_interface:",
+            f"  direction: {direction}",
             "  hclk: hclk",
             "  hresetn: hresetn",
             "  hsel: hsel",

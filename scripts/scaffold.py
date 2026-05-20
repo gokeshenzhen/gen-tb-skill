@@ -104,12 +104,12 @@ def _validate_intake(intake: dict) -> None:
     width_key = _WIDTH_KEY[bus]
     if width_key not in intake:
         sys.exit(f"FATAL: intake.yaml missing key for {bus}: {width_key}")
-    if bus == "axi_lite":
+    if bus in ("axi_lite", "ahb"):
         direction = intake.get("bus_direction", "slave")
         if direction not in ("slave", "master"):
             sys.exit(f"FATAL: unsupported bus_direction: {direction!r}")
     elif "bus_direction" in intake and intake["bus_direction"] != "slave":
-        sys.exit(f"FATAL: bus_direction is only meaningful for axi_lite")
+        sys.exit(f"FATAL: bus_direction is only meaningful for axi_lite or ahb")
     vip_source = intake.get(f"{bus}_vip_source", "generate_fresh")
     if vip_source not in ("generate_fresh", "reuse_my_vip"):
         sys.exit(f"FATAL: unsupported {bus}_vip_source: {vip_source!r}")
@@ -706,6 +706,8 @@ def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
 def emit_tb_api_primitives(bus: str, direction: str = "slave") -> str:
     if bus == "axi_lite":
         return _emit_axi_lite_tb_api_primitives(direction)
+    if bus == "ahb" and direction == "master":
+        return _emit_ahb_master_tb_api_primitives()
     if bus == "ahb":
         return textwrap.dedent("""\
             // ====================================================================
@@ -1116,6 +1118,80 @@ def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
         """)
 
 
+def _emit_ahb_master_tb_api_primitives() -> str:
+    # AHB-Lite responder helpers (DUT is master). Memory-backed shared state.
+    return textwrap.dedent("""\
+        // ====================================================================
+        // tb_api primitives — AHB-Lite responder helpers (DUT is master).
+        // The responder agent owns the live bus handshakes; these helpers
+        // expose its memory and observed-transaction signals.
+        // ====================================================================
+
+        function automatic void _require_vif();
+            if (vif == null) `uvm_fatal("TB_API",
+                "vif not set — call tb_api::set_vif(...) in top initial block")
+        endfunction
+
+        logic [DATA_W-1:0] _mem [logic [ADDR_W-1:0]];
+        int unsigned writes_observed = 0;
+        int unsigned reads_observed  = 0;
+        logic [ADDR_W-1:0] last_write_addr;
+        logic [DATA_W-1:0] last_write_data;
+        logic [ADDR_W-1:0] last_read_addr;
+
+        function automatic void clear_observed();
+            writes_observed = 0;
+            reads_observed  = 0;
+        endfunction
+
+        function automatic void seed_mem(input logic [ADDR_W-1:0] addr,
+                                          input logic [DATA_W-1:0] data);
+            _mem[addr] = data;
+        endfunction
+
+        function automatic logic [DATA_W-1:0] peek_mem(input logic [ADDR_W-1:0] addr);
+            if (_mem.exists(addr)) return _mem[addr];
+            return '0;
+        endfunction
+
+        // Wait for at least one observed write/read since start of sim (or
+        // since the last clear_observed call). Returns immediately if one
+        // has already happened.
+        task automatic wait_for_write(input int unsigned timeout_cycles = 1000);
+            int unsigned n = timeout_cycles;
+            _require_vif();
+            while (writes_observed == 0) begin
+                @(posedge vif.hclk);
+                if (--n == 0) `uvm_fatal("TB_API",
+                    "timeout waiting for DUT-initiated write")
+            end
+        endtask
+
+        task automatic wait_for_read(input int unsigned timeout_cycles = 1000);
+            int unsigned n = timeout_cycles;
+            _require_vif();
+            while (reads_observed == 0) begin
+                @(posedge vif.hclk);
+                if (--n == 0) `uvm_fatal("TB_API",
+                    "timeout waiting for DUT-initiated read")
+            end
+        endtask
+
+        task automatic expect_observed_write(input logic [ADDR_W-1:0] addr,
+                                              input logic [DATA_W-1:0] data,
+                                              input string             tag = "EXPECT_WR");
+            if (writes_observed == 0)
+                `uvm_error(tag, "no writes observed yet")
+            else if (last_write_addr !== addr || last_write_data !== data)
+                `uvm_error(tag, $sformatf(
+                    "last observed write @0x%0h=0x%08h, expected @0x%0h=0x%08h",
+                    last_write_addr, last_write_data, addr, data))
+            else
+                `uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, data), UVM_LOW)
+        endtask
+        """)
+
+
 def emit_apb_agent_pkg() -> str:
     return textwrap.dedent("""\
         `ifndef APB_AGENT_SV
@@ -1306,7 +1382,9 @@ def emit_apb_sequence() -> str:
         """)
 
 
-def emit_ahb_agent_pkg() -> str:
+def emit_ahb_agent_pkg(direction: str = "slave") -> str:
+    role = "// slave responder (DUT is master)" if direction == "master" else "// master BFM (DUT is slave)"
+    _ = role  # currently only emitted as a comment via the format string
     return textwrap.dedent("""\
         `ifndef AHB_AGENT_SV
         `define AHB_AGENT_SV
@@ -1401,7 +1479,75 @@ def emit_ahb_sequencer() -> str:
         """)
 
 
-def emit_ahb_driver() -> str:
+def emit_ahb_driver(direction: str = "slave") -> str:
+    if direction == "master":
+        # AHB-Lite slave responder (DUT is master).
+        # Single-master, single-beat, zero-wait-state behavior: drive
+        # hready=1 always; on the cycle after a NONSEQ address phase,
+        # capture data into _mem (for writes) or drive hrdata (for reads).
+        return textwrap.dedent("""\
+            class ahb_driver extends uvm_driver #(ahb_trans);
+                `uvm_component_utils(ahb_driver)
+                vif_t vif;
+
+                function new(string name, uvm_component parent = null);
+                    super.new(name, parent);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    if (!uvm_config_db#(vif_t)::get(this, "", "ahb_vif", vif))
+                        `uvm_fatal("CFG", "ahb_vif missing")
+                    tb_api::set_vif(vif);
+                endfunction
+
+                task run_phase(uvm_phase phase);
+                    bit                addr_pend;
+                    bit                pend_write;
+                    logic [ADDR_W-1:0] pend_addr;
+                    @(posedge vif.hclk);
+                    vif.hready <= 1'b1;
+                    vif.hresp  <= 1'b0;
+                    vif.hrdata <= '0;
+                    addr_pend  = 1'b0;
+                    pend_write = 1'b0;
+                    pend_addr  = '0;
+                    forever begin
+                        @(posedge vif.hclk);
+                        if (vif.hresetn !== 1'b1) begin
+                            addr_pend  = 1'b0;
+                            vif.hrdata <= '0;
+                            continue;
+                        end
+                        // Data phase for any captured address.
+                        if (addr_pend) begin
+                            if (pend_write) begin
+                                tb_api::_mem[pend_addr]  = vif.hwdata;
+                                tb_api::last_write_addr  = pend_addr;
+                                tb_api::last_write_data  = vif.hwdata;
+                                tb_api::writes_observed  = tb_api::writes_observed + 1;
+                            end else begin
+                                tb_api::last_read_addr = pend_addr;
+                                tb_api::reads_observed = tb_api::reads_observed + 1;
+                            end
+                            addr_pend = 1'b0;
+                        end
+                        // Address phase capture (NONSEQ).
+                        if (vif.hsel === 1'b1 && vif.htrans === 2'b10) begin
+                            pend_addr  = vif.haddr;
+                            pend_write = vif.hwrite;
+                            addr_pend  = 1'b1;
+                            // For reads, drive hrdata in the next cycle's data phase.
+                            if (!vif.hwrite) begin
+                                vif.hrdata <= tb_api::_mem.exists(vif.haddr) ?
+                                               tb_api::_mem[vif.haddr] : '0;
+                            end
+                        end
+                    end
+                endtask
+            endclass
+            """)
+    # Master BFM (DUT is slave) — unchanged.
     return textwrap.dedent("""\
         class ahb_driver extends uvm_driver #(ahb_trans);
             `uvm_component_utils(ahb_driver)
@@ -2655,10 +2801,10 @@ def main() -> int:
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
         elif bus == "ahb":
-            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agent.sv", emit_ahb_agent_pkg(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agent.sv", emit_ahb_agent_pkg(direction), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agt_config.sv", emit_ahb_agt_config(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_trans.sv", emit_ahb_trans(), False))
-            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_driver.sv", emit_ahb_driver(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_driver.sv", emit_ahb_driver(direction), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_monitor.sv", emit_ahb_monitor(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequencer.sv", emit_ahb_sequencer(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequence.sv", emit_ahb_sequence(), False))

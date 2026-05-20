@@ -76,6 +76,23 @@
       ]
     },
     {
+      "id": 7,
+      "name": "ahb-simple-master",
+      "fixture": "ahb_simple_master",
+      "prompt": "I have a tiny AHB-Lite master that issues one NONSEQ write of 0xDEADBEEF to address 0x100 after reset. RTL is in rtl/. Generate a UVM tb that observes this transaction via a slave responder.",
+      "expected_output": "A UVM tb scaffold with the AHB-Lite slave responder agent and a responder_smoke test that observes the DUT write. No RAL.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",     "kind": "files_exist", "files_txt": "evals/fixtures/ahb_simple_master/expected/files.txt"},
+        {"name": "compile_succeeds",           "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",        "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",              "kind": "sim_passes",     "test": "ahb_simple_master_sanity_test"},
+        {"name": "responder_smoke_passes",     "kind": "sim_passes",     "test": "ahb_simple_master_responder_smoke_test"},
+        {"name": "observed_dut_write",         "kind": "log_contains",   "test": "ahb_simple_master_responder_smoke_test", "needle": "@0x100 = 0xdeadbeef"},
+        {"name": "no_fixture_pollution",       "kind": "fixture_unchanged"}
+      ]
+    },
+    {
       "id": 6,
       "name": "axi-lite-slave-existing-vip",
       "fixture": "axi_lite_simple_slave",

@@ -1,0 +1,5 @@
+version: 1
+ip_name: ahb_simple_master
+addr_width: 12
+data_width: 32
+registers: []

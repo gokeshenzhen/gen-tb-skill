@@ -7,8 +7,8 @@ description: Generate a complete UVM testbench scaffold for a single IP from its
 
 ## Purpose
 
-Generate a directory-aligned UVM testbench for one APB / AHB-Lite slave or
-AXI4-Lite (slave or master) IP from:
+Generate a directory-aligned UVM testbench for one APB slave, AHB-Lite
+(slave or master), or AXI4-Lite (slave or master) IP from:
 
 - behavioral spec: `*.docx`, `*.pdf`, `*.md`
 - register table: `*.xlsx`, `*.csv`, markdown table, IP-XACT XML
@@ -24,7 +24,7 @@ The result must compile, run `<ip>_sanity_test`, run
 
 | Dimension | v1 scope | Planned |
 |---|---|---|
-| Bus | APB slave, AHB-Lite slave, AXI4-Lite (slave or master) | AXI4 full |
+| Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | AXI4 full |
 | Simulator | VCS | xrun, vsim |
 | Ref model | none, SV, C-DPI, Python-DPI | — |
 | Spec input | docx, pdf, md | — |
@@ -84,9 +84,10 @@ If no RTL exists, generate a stub only when the user confirms.
 Infer top module using AST tooling if available; regex inference is
 medium confidence. If top is ambiguous, ask. Record exact APB / AHB /
 AXI4-Lite signal names and widths in `rtl_discovery.yaml`; never
-normalize case. For AXI4-Lite, also record which side of the bus the DUT
-sits on (`bus_direction: slave|master`) — slave is the default and
-mirrors APB/AHB; master means TB provides a slave responder.
+normalize case. For AHB-Lite and AXI4-Lite, also record which side of
+the bus the DUT sits on (`bus_direction: slave|master`) — slave is the
+default and means the TB drives a master BFM; master means the TB
+provides a memory-backed slave responder.
 
 For details, load `references/rtl_discovery.md` and
 `references/rtl_stub.md`.
@@ -233,10 +234,11 @@ make all SV_CASE=<ip>_reg_access_test
 Sanity must include a positive bus check: read a register with known
 non-zero reset when possible; otherwise read register 0 and prove the
 DUT responds (`pready` / `hready` / `rvalid`) before timeout. For
-AXI4-Lite with `bus_direction: master`, the mandatory test is instead
-`<ip>_responder_smoke_test`: the slave responder must observe at least
-one valid AW/W or AR handshake from the DUT within a timeout. RAL and
-`<ip>_reg_access_test` are not generated for the master direction.
+AHB-Lite or AXI4-Lite with `bus_direction: master`, the mandatory test
+is instead `<ip>_responder_smoke_test`: the slave responder must
+observe at least one valid write or read handshake from the DUT within
+a timeout. RAL and `<ip>_reg_access_test` are not generated for the
+master direction.
 
 If a mandatory runtime test fails, re-enter Phase 5 with a runtime-fix
 sub-agent for up to 3 attempts. Save results to

@@ -5,21 +5,35 @@
 
 ## Scope
 
-The generated AHB support is AHB-Lite slave-oriented:
+The generated AHB-Lite support covers two directions:
 
-- single master in the generated testbench
-- single NONSEQ word read/write transfers
+- `bus_direction: slave` (default) — DUT is the AHB-Lite slave; TB
+  drives a single master BFM. Full agent + RAL adapter +
+  `<ip>_sanity_test`, `<ip>_reg_access_test`, `<ip>_random_seq_test`
+  on `tb_api::write/read`.
+- `bus_direction: master` — DUT is the AHB-Lite master; TB provides a
+  memory-backed slave responder (zero-wait-state, drives `hready=1`,
+  captures NONSEQ writes into `tb_api::_mem`, serves reads from it).
+  RAL is not generated; mandatory test is
+  `<ip>_responder_smoke_test`.
+
+Restrictions in both directions:
+
+- single master / single slave
+- single NONSEQ word read/write transfers (no SEQ bursts, no SPLIT/
+  RETRY, no locked transfers, no multi-master arbitration)
 - 32-bit data bus
 - `haddr_width` controls address width, default 12
-- no SPLIT/RETRY, bursts, locked transfers, or multi-master arbitration
 
-Use this path only for register-level peripheral verification. If the
-DUT requires full AHB system behavior, report that as out of scope.
+Use this path only for register-level peripheral verification (slave)
+or single-beat traffic verification (master). If the DUT requires full
+AHB system behavior, report that as out of scope.
 
 ## Intake
 
 ```yaml
 bus_protocol: ahb
+bus_direction: slave          # or master
 haddr_width: 12
 ahb_vip_source: generate_fresh
 ```
@@ -39,8 +53,12 @@ tb/ahb_agt_top/
 tb/ral/<ip>_ahb_adapter.sv
 ```
 
-`tb_api::write/read/expect_reg` remain the mandatory DE surface and use
-AHB-Lite transfers internally.
+`tb_api::write/read/expect_reg` remain the mandatory DE surface for
+the slave direction and use AHB-Lite transfers internally. For the
+master direction, `tb_api::` exposes responder helpers (`seed_mem`,
+`peek_mem`, `wait_for_write`, `wait_for_read`,
+`expect_observed_write`, `clear_observed`) — `write`/`read` are not
+emitted because the DUT is the master.
 
 ## Signals
 

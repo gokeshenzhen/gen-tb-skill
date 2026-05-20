@@ -1,0 +1,18 @@
+# gen-tb expected output for ahb_simple_master fixture (DUT-as-master).
+
+.prj_top                                          exists
+script/makefile                                   nonempty
+script/setup.sh                                   nonempty
+script/check_env.sh                               nonempty
+script/design.f                                   nonempty
+script/tb.f                                       nonempty
+top/ahb_simple_master_tb_top.sv                   nonempty
+tb/ahb_if.sv                                      nonempty
+tb/ahb_agt_top/ahb_agent.sv                       nonempty
+tb/ahb_agt_top/ahb_driver.sv                      nonempty
+tb/tb_api/tb_api_pkg.sv                           nonempty
+tb/tb_api/tb_api_primitives.svh                   nonempty
+test/ahb_simple_master_pkg.sv                     nonempty
+test/sv_list                                      nonempty
+work                                              dir
+work/_gen_audit                                   dir

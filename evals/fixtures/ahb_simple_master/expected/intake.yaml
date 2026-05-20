@@ -1,0 +1,24 @@
+ip_name: ahb_simple_master
+ip_root: /tmp/gen-tb-dryrun-ahb_simple_master-v1/ahb_simple_master
+test_prefix: ahb_simple_master
+
+rtl_state: found_in_place
+bus_protocol: ahb
+bus_direction: master
+ahb_vip_source: generate_fresh
+ref_model_language: skip
+clock:
+  hclk_freq_mhz: 100
+  hclk_period_ns: 10
+  additional_domains: []
+reset:
+  hresetn_polarity: active_low
+  hresetn_duration_cycles: 16
+uvm_version: '1.2'
+haddr_width: 12
+endianness: msb_first
+coverage:
+  enable: false
+sanity_extras: []
+
+simulator: vcs
