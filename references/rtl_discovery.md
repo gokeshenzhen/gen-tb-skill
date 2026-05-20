@@ -65,6 +65,7 @@ For AHB-Lite, use:
 
 ```yaml
 ahb_interface:
+  direction: slave              # slave (DUT is slave) | master (DUT is master)
   hclk: hclk
   hresetn: hresetn
   hsel: hsel
@@ -196,7 +197,9 @@ behavior without an explicit answer.
 
 ## AHB Port Discovery
 
-The generated top expects AHB-Lite slave semantics:
+The generated top uses the same AHB-Lite signal set regardless of
+`bus_direction` (slave or master) — only the role of TB vs DUT
+changes:
 
 - one clock: `hclk`
 - one active-low reset: `hresetn`
@@ -205,6 +208,10 @@ The generated top expects AHB-Lite slave semantics:
 - write data: `hwdata`
 - read data: `hrdata`
 - response/ready: `hready`, `hresp`
+
+Record the chosen direction in `ahb_interface.direction`
+(`slave` is the default; `master` means the DUT initiates transfers
+and the TB provides a memory-backed slave responder).
 
 Do not normalize case in the emitted names; use exact RTL port names.
 Match common variants only for discovery:

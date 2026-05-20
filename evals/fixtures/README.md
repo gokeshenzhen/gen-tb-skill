@@ -12,12 +12,14 @@ turn into a passing UVM testbench.
 | `aes128` | Algorithmic | APB (via wrapper over secworks core) | C-DPI | Yes |
 | `axi_lite_simple_slave` | Peripheral | AXI4-Lite slave (2 regs) | none | Yes |
 | `axi_lite_simple_master` | Bus master | AXI4-Lite master (one-shot write) | none | Yes |
+| `ahb_simple_master` | Bus master | AHB-Lite master (one-shot NONSEQ write) | none | Yes |
 
-The two AXI4-Lite fixtures exercise both directions: DUT-as-slave
-(generated master BFM + RAL + reg_access) and DUT-as-master (memory-
-backed slave responder + `<ip>_responder_smoke_test`). The
-`axi_lite_simple_slave` fixture also ships a stub `user_axi_lite_vip/`
-package that drives the `reuse_my_vip` eval path.
+The AXI4-Lite and AHB-Lite master fixtures exercise the DUT-as-master
+path: a memory-backed slave responder runs in the generated TB and
+`<ip>_responder_smoke_test` asserts on `tb_api::wait_for_write`. The
+AXI4-Lite slave fixture additionally covers DUT-as-slave (generated
+master BFM + RAL + reg_access) and ships a stub `user_axi_lite_vip/`
+package driving the `reuse_my_vip` eval path.
 
 ## Adding a new fixture
 
@@ -28,8 +30,9 @@ A fixture is a directory containing:
 ├── README.md              # provenance, license, what it exercises
 ├── LICENSE                # original upstream license (if applicable)
 ├── rtl/                   # synthesizable RTL — must include any
-│                          # wrapper that presents an APB / AHB-Lite slave
-│                          # or AXI4-Lite (slave or master) interface
+│                          # wrapper that presents an APB slave, AHB-Lite
+│                          # (slave or master), or AXI4-Lite (slave or
+│                          # master) interface
 ├── spec/
 │   ├── <name>_spec.{md,pdf,docx}    # at least one behavior doc
 │   └── <name>_regs.{xlsx,csv,md}    # register table

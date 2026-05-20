@@ -102,7 +102,10 @@ record an explicit tie/default in `rtl_discovery.yaml` before scaffold.
 
 ## DUT AHB Wiring
 
-For `bus_protocol: ahb`, the canonical AHB-Lite connection is:
+For `bus_protocol: ahb`, the canonical AHB-Lite connection is the same
+regardless of `bus_direction` — only the role of TB vs DUT changes
+(`slave` → TB master BFM; `master` → TB memory-backed slave
+responder):
 
 ```systemverilog
 .<hclk>    (hclk),

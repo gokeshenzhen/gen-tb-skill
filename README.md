@@ -12,9 +12,10 @@ register table (xlsx / csv / md / IP-XACT). Targets dual personas:
 
 **Pre-alpha implementation** — the skill entry point and the core
 scaffold/eval scripts are present. The current implementation targets
-APB-slave, AHB-Lite-slave, and AXI4-Lite IPs (DUT-as-slave or
-DUT-as-master). Local regression fixtures exercise all three bus
-protocols plus external-VIP reuse.
+APB-slave, AHB-Lite (DUT-as-slave or DUT-as-master), and AXI4-Lite
+(DUT-as-slave or DUT-as-master) IPs. Local regression fixtures
+exercise all three bus protocols in both directions, plus external-VIP
+reuse for the slave directions.
 
 Currently in this repo:
 
@@ -74,7 +75,7 @@ The skill always materializes the same directory shape (modeled on
 
 | Dimension | Scope |
 |---|---|
-| Bus protocol | APB slave, AHB-Lite slave, AXI4-Lite (slave or master); AXI4 full planned |
+| Bus protocol | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master); AXI4 full planned |
 | Simulator | VCS only (xrun / questa planned) |
 | Ref model lang | none / SV / C-DPI; Python-DPI schema only |
 | RAL input | xlsx / csv / md tables / IP-XACT |
