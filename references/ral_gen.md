@@ -193,11 +193,11 @@ class <ip>_apb_adapter extends uvm_reg_adapter;
 endclass
 ```
 
-This connects the RAL to the APB agent's sequencer:
+This connects the RAL to the generated bus agent's sequencer:
 
 ```systemverilog
 // in env.connect_phase
-ral.default_map.set_sequencer(apb_agt.sqr, adapter);
+ral.default_map.set_sequencer(agent.sqr, adapter);
 ral.default_map.set_auto_predict(1);
 ```
 

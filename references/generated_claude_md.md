@@ -50,10 +50,10 @@ not a golden implementation.
 ## Current Configuration
 
 - IP: `<ip>`
-- Bus: APB slave
+- Bus: `<APB slave | AHB-Lite slave>`
 - Simulator: VCS
 - UVM: `<uvm_version>`
-- APB VIP source: `<generate_fresh | reuse_my_vip>`
+- Bus VIP source: `<generate_fresh | reuse_my_vip>`
 - External VIP reuse level: `<import_only | drive_with_vip | n/a>`
 - Reference model: `<skip | sv | c_dpi | py_dpi>`
 - Reference model source/trust: `<user_provided/spec_derived_basic/stub_only>` / `<golden/heuristic/interface_only>`

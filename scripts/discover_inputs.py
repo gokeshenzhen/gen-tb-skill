@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 
-def _find_top_module(rtl_files: list[Path]) -> str:
+def _find_top_module(rtl_files: list[Path], bus: str) -> str:
     instantiated: set[str] = set()
     for path in rtl_files:
         text = path.read_text(errors="ignore")
@@ -22,7 +22,8 @@ def _find_top_module(rtl_files: list[Path]) -> str:
             if mod != path.stem and re.search(rf"\b{re.escape(mod)}\s+\w+\s*\(", text):
                 instantiated.add(mod)
     candidates = [path.stem for path in rtl_files if path.stem not in instantiated]
-    return next((c for c in candidates if "apb_wrap" in c), candidates[0] if candidates else "")
+    wrap_hint = f"{bus}_wrap"
+    return next((c for c in candidates if wrap_hint in c), candidates[0] if candidates else "")
 
 
 def _ordered_rtl_files(rtl_files: list[Path], top: str, ip_root: Path) -> list[Path]:
@@ -49,9 +50,9 @@ def _default_other_pads(ip_name: str) -> list[str]:
     ]
 
 
-def render_rtl_discovery(ip_root: Path, ip_name: str) -> str:
+def render_rtl_discovery(ip_root: Path, ip_name: str, bus: str = "apb") -> str:
     rtl_files = sorted((ip_root / "rtl").glob("*.v"))
-    top = _find_top_module(rtl_files)
+    top = _find_top_module(rtl_files, bus)
     ordered = _ordered_rtl_files(rtl_files, top, ip_root)
 
     lines = [
@@ -71,26 +72,45 @@ def render_rtl_discovery(ip_root: Path, ip_name: str) -> str:
         role = "top" if path.stem == top else "leaf"
         lines.append(f"  - {{path: $PROJ_DIR/rtl/{path.name}, role: {role}, order: {i}}}")
 
-    lines += [
-        "apb_interface:",
-        "  pclk: pclk",
-        "  presetn: presetn",
-        "  psel: psel",
-        "  penable: penable",
-        "  pwrite: pwrite",
-        "  paddr:  {name: paddr,  width: 12}",
-        "  pwdata: {name: pwdata, width: 32}",
-        "  prdata: {name: prdata, width: 32}",
-        "  pready: pready",
-        "  pslverr: pslverr",
-        *_default_other_pads(ip_name),
-    ]
+    if bus == "ahb":
+        lines += [
+            "ahb_interface:",
+            "  hclk: hclk",
+            "  hresetn: hresetn",
+            "  hsel: hsel",
+            "  haddr:  {name: haddr,  width: 12}",
+            "  htrans: htrans",
+            "  hwrite: hwrite",
+            "  hsize: hsize",
+            "  hburst: hburst",
+            "  hprot: hprot",
+            "  hwdata: {name: hwdata, width: 32}",
+            "  hrdata: {name: hrdata, width: 32}",
+            "  hready: hready",
+            "  hresp: hresp",
+            *_default_other_pads(ip_name),
+        ]
+    else:
+        lines += [
+            "apb_interface:",
+            "  pclk: pclk",
+            "  presetn: presetn",
+            "  psel: psel",
+            "  penable: penable",
+            "  pwrite: pwrite",
+            "  paddr:  {name: paddr,  width: 12}",
+            "  pwdata: {name: pwdata, width: 32}",
+            "  prdata: {name: prdata, width: 32}",
+            "  pready: pready",
+            "  pslverr: pslverr",
+            *_default_other_pads(ip_name),
+        ]
     return "\n".join(lines) + "\n"
 
 
-def emit_rtl_discovery(ip_root: Path, ip_name: str, out_yaml: Path) -> None:
+def emit_rtl_discovery(ip_root: Path, ip_name: str, out_yaml: Path, bus: str = "apb") -> None:
     out_yaml.parent.mkdir(parents=True, exist_ok=True)
-    out_yaml.write_text(render_rtl_discovery(ip_root, ip_name))
+    out_yaml.write_text(render_rtl_discovery(ip_root, ip_name, bus))
 
 
 def main() -> int:
@@ -98,8 +118,9 @@ def main() -> int:
     ap.add_argument("--ip-root", required=True, type=Path)
     ap.add_argument("--ip-name", required=True)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--bus", choices=["apb", "ahb"], default="apb")
     args = ap.parse_args()
-    emit_rtl_discovery(args.ip_root, args.ip_name, args.out)
+    emit_rtl_discovery(args.ip_root, args.ip_name, args.out, args.bus)
     return 0
 
 

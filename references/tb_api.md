@@ -13,9 +13,11 @@ against the DUT's registered output. **gen-tb must not let each
 invocation reinvent the APB read primitive** — it's load-bearing for
 every generated tb's sanity test.
 
-This file provides one *known-good* implementation that gen-tb emits
-verbatim. Generation never edits the body of these tasks; it only
-parameterizes the package header (paddr/pdata widths, addr constants).
+This file provides the APB *known-good* implementation. For
+`bus_protocol: ahb`, `scripts/scaffold.py` emits the AHB-Lite variant
+described in `references/ahb.md` with the same public
+`tb_api::write/read/expect_reg` surface. Generation only parameterizes
+the package header and selects the bus-specific primitive body.
 
 ## Package skeleton
 
@@ -30,12 +32,12 @@ package tb_api;
     `include "uvm_macros.svh"
 
     // ---- compile-time parameters injected from intake.yaml ----
-    parameter int  ADDR_W            = {{paddr_width}};
+    parameter int  ADDR_W            = {{paddr_width_or_haddr_width}};
     parameter int  DATA_W            = 32;
     parameter int  DEFAULT_TIMEOUT_NS = 100_000;
 
     // ---- virtual interface handle (set once at start_of_simulation) ----
-    typedef virtual apb_if #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;
+    typedef virtual <bus>_if #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;
     vif_t vif;
 
     function automatic void set_vif(vif_t v);
@@ -55,7 +57,7 @@ load-bearing task bodies.
 
 ## Primitives (`tb_api_primitives.svh`)
 
-This is the canonical body — emit it verbatim. Comments explain
+For APB, this is the canonical body. Comments explain
 *why* each line matters; do not strip them.
 
 ```systemverilog

@@ -109,7 +109,9 @@ def _emit_audit_inputs(eval_def: dict, ip_root: Path):
     (audit / "intake.yaml").write_text(intake_content)
 
     # rtl_discovery.yaml — re-emit with current paths
-    emit_rtl_discovery(ip_root, name, audit / "rtl_discovery.yaml")
+    bus_match = re.search(r"^bus_protocol:\s*(\w+)", intake_content, re.MULTILINE)
+    bus = bus_match.group(1) if bus_match else "apb"
+    emit_rtl_discovery(ip_root, name, audit / "rtl_discovery.yaml", bus=bus)
 
     # registers.yaml — parse from the fixture xlsx
     xlsx_candidates = list((fixture_root / "spec").glob("*_regs.xlsx"))

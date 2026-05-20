@@ -1,7 +1,7 @@
 # Generated top.sv rules (gen-tb reference)
 
 > Loaded during Phase 4 scaffold and Phase 5 compile-fix. Defines how
-> `top/<ip>_tb_top.sv` connects the generated APB testbench to user RTL.
+> `top/<ip>_tb_top.sv` connects the generated APB or AHB testbench to user RTL.
 
 ## Ownership
 
@@ -21,28 +21,25 @@ module <ip>_tb_top;
     import uvm_pkg::*;
     `include "uvm_macros.svh"
 
-    logic pclk = 0;
-    logic presetn = 0;
-    always #<half_period_ns> pclk = ~pclk;
+    logic <bus_clk> = 0;
+    logic <bus_resetn> = 0;
+    always #<half_period_ns> <bus_clk> = ~<bus_clk>;
 
-    apb_if #(.ADDR_W(<paddr_width>), .DATA_W(32)) apb (
-        .pclk(pclk),
-        .presetn(presetn)
-    );
+    <bus>_if #(.ADDR_W(<addr_width>), .DATA_W(32)) <bus> (...);
 
     // non-bus DUT pad declarations
 
     <top_module> u_dut (...);
 
     initial begin
-        presetn = 0;
-        repeat (<reset_cycles>) @(posedge pclk);
-        presetn = 1;
+        <bus_resetn> = 0;
+        repeat (<reset_cycles>) @(posedge <bus_clk>);
+        <bus_resetn> = 1;
     end
 
     initial begin
-        uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
-        tb_api::set_vif(apb);
+        uvm_config_db#(tb_api::vif_t)::set(null, "*", "<bus>_vif", <bus>);
+        tb_api::set_vif(<bus>);
         run_test();
     end
 endmodule
@@ -53,7 +50,7 @@ own UVM components, sequences, and per-test agent config objects.
 
 ## Clock And Reset (G12)
 
-Clock and reset are driven exactly once, by the generated top. The APB
+Clock and reset are driven exactly once, by the generated top. The bus
 interface receives them as input ports:
 
 ```systemverilog
@@ -76,10 +73,10 @@ should use the same input-port pattern.
 
 Reset defaults:
 
-- `presetn` is active-low unless intake says otherwise
+- `presetn`/`hresetn` is active-low unless intake says otherwise
 - reset starts asserted at time 0
-- deassert after `intake.reset.presetn_duration_cycles` pclk cycles
-- tests wait for `tb_api::vif.presetn === 1'b1` before driving
+- deassert after the bus-specific reset duration in intake
+- tests wait for `tb_api::vif.<resetn> === 1'b1` before driving
 
 ## DUT APB Wiring
 
@@ -102,9 +99,29 @@ The canonical APB connection is:
 If the DUT lacks `pready` or `pslverr`, do not guess. Ask the user or
 record an explicit tie/default in `rtl_discovery.yaml` before scaffold.
 
+## DUT AHB Wiring
+
+For `bus_protocol: ahb`, the canonical AHB-Lite connection is:
+
+```systemverilog
+.<hclk>    (hclk),
+.<hresetn> (hresetn),
+.<hsel>    (ahb.hsel),
+.<haddr>   (ahb.haddr),
+.<htrans>  (ahb.htrans),
+.<hwrite>  (ahb.hwrite),
+.<hsize>   (ahb.hsize),
+.<hburst>  (ahb.hburst),
+.<hprot>   (ahb.hprot),
+.<hwdata>  (ahb.hwdata),
+.<hrdata>  (ahb.hrdata),
+.<hready>  (ahb.hready),
+.<hresp>   (ahb.hresp)
+```
+
 ## Non-bus Pads (G4)
 
-Every top-level DUT port not consumed by APB clock/reset/data must come
+Every top-level DUT port not consumed by bus clock/reset/data must come
 from `rtl_discovery.yaml: other_pads`.
 
 Rules:
@@ -112,7 +129,7 @@ Rules:
 - DUT input pads get generated `logic` declarations with conservative
   protocol-idle defaults
 - DUT output pads get `wire` declarations and no driver
-- pad declarations live in top, not in the APB interface
+- pad declarations live in top, not in the bus interface
 - mark functional pads as future agent hookups in comments when needed
 
 Example:
@@ -140,7 +157,7 @@ If an input's default can affect mandatory sanity, mention it in
 
 ## UVM Handoff
 
-Top must publish the APB virtual interface for both DE and DV surfaces:
+Top must publish the bus virtual interface for both DE and DV surfaces:
 
 ```systemverilog
 initial begin
@@ -150,10 +167,10 @@ initial begin
 end
 ```
 
-`tb_api::set_vif(apb)` is mandatory because sanity and import-only VIP
+`tb_api::set_vif(...)` is mandatory because sanity and import-only VIP
 reuse tests use `tb_api` directly. The `uvm_config_db` entry is
-mandatory because generated APB agent drivers/monitors retrieve
-`apb_vif`.
+mandatory because generated bus agent drivers/monitors retrieve
+`apb_vif` or `ahb_vif`.
 
 Generated tests configure the generated agent by setting
 `apb_agt_config` on their local agent path:
@@ -164,12 +181,12 @@ cfg.vif = tb_api::vif;
 uvm_config_db#(apb_agt_config)::set(this, "agent", "cfg", cfg);
 ```
 
-Do not instantiate the generated APB agent in top. Keep UVM components
+Do not instantiate the generated bus agent in top. Keep UVM components
 inside tests/env-level classes.
 
 ## External VIP Reuse
 
-For `apb_vip_source: reuse_my_vip` and `apb_vip_reuse_level:
+For `<bus>_vip_source: reuse_my_vip` and `<bus>_vip_reuse_level:
 import_only`, top stays the same canonical top. Built-in sanity and
 reg-access tests use `tb_api`; the external VIP is only imported into
 the compile tree.
@@ -177,7 +194,7 @@ the compile tree.
 For `drive_with_vip`, Phase 5 may generate project-local bridge logic:
 
 - an interface instance matching the user's VIP
-- continuous assignments between generated `apb_if` and user VIP
+- continuous assignments between generated bus interface and user VIP
   interface signals
 - `uvm_config_db` setup for the user's VIP virtual interface
 - one read/write smoke test under `test/`
@@ -209,15 +226,17 @@ Before accepting generated top:
 - every DUT top port is connected exactly once
 - input pads have explicit defaults or user-approved ties
 - output pads have no procedural or continuous driver from top
-- `tb_api::set_vif(apb)` exists
-- `uvm_config_db` publishes `"apb_vif"`
-- reset deasserts before mandatory tests drive APB
-- `paddr` width matches `intake.yaml.paddr_width`
+- `tb_api::set_vif(...)` exists
+- `uvm_config_db` publishes the selected bus vif key
+- reset deasserts before mandatory tests drive the bus
+- address width matches `paddr_width` or `haddr_width`
 
 ## Cross-references
 
 - `references/rtl_discovery.md` — source schema for ports and pads
 - `references/apb.md` — generated APB interface/agent behavior
 - `references/apb_external_vip.md` — external VIP bridge boundary
+- `references/ahb.md` — generated AHB interface/agent behavior
+- `references/ahb_external_vip.md` — external VIP bridge boundary
 - `references/tb_api.md` — DE BFM virtual interface handoff
 - `scripts/scaffold.py` `emit_tb_top` — current implementation

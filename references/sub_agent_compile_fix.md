@@ -43,7 +43,7 @@ work/_gen_audit/rtl_discovery.yaml
 work/_gen_audit/spec_normalized/registers.yaml
 ```
 
-For `apb_vip_source: reuse_my_vip`, the user VIP is read-only. Generate
+For `<bus>_vip_source: reuse_my_vip`, the user VIP is read-only. Generate
 project-local glue instead of patching VIP source.
 
 ## Prompt template

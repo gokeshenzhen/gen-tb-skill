@@ -11,8 +11,8 @@ turn into a passing UVM testbench.
 | `uart16550` | Peripheral | APB (via wrapper over OpenCores Wishbone core) | none | No (see LICENSE.notes) |
 | `aes128` | Algorithmic | APB (via wrapper over secworks core) | C-DPI | Yes |
 
-DMA / bus-master class fixtures are deferred until AHB / AXI-Lite
-support lands (v2).
+DMA / bus-master class fixtures are deferred until a full bus-master
+evaluation path exists.
 
 ## Adding a new fixture
 
@@ -23,7 +23,7 @@ A fixture is a directory containing:
 ├── README.md              # provenance, license, what it exercises
 ├── LICENSE                # original upstream license (if applicable)
 ├── rtl/                   # synthesizable RTL — must include any
-│                          # wrapper that presents an APB slave
+│                          # wrapper that presents an APB or AHB-Lite slave
 ├── spec/
 │   ├── <name>_spec.{md,pdf,docx}    # at least one behavior doc
 │   └── <name>_regs.{xlsx,csv,md}    # register table
@@ -33,10 +33,10 @@ A fixture is a directory containing:
     └── sanity.json        # which sanity cases must pass
 ```
 
-The fixture's RTL **must present an APB slave interface to the
+The fixture's RTL **must present an APB or AHB-Lite slave interface to the
 testbench-facing side** (wrappers are part of the fixture, written by
-us; the upstream RTL is treated as a black box). v2 will drop this
-constraint for AHB / AXI-Lite.
+us; the upstream RTL is treated as a black box). AXI-Lite remains out
+of scope.
 
 Also update:
 - `evals/fixtures/LICENSE.notes.md` with the new license row

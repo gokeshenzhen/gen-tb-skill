@@ -1,13 +1,13 @@
 ---
 name: gen-tb
-description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable APB-based UVM tb with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
+description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable APB/AHB-based UVM tb with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
 ---
 
 # gen-tb — UVM Testbench Scaffold Generator
 
 ## Purpose
 
-Generate a directory-aligned UVM testbench for one APB-slave IP from:
+Generate a directory-aligned UVM testbench for one APB or AHB-Lite slave IP from:
 
 - behavioral spec: `*.docx`, `*.pdf`, `*.md`
 - register table: `*.xlsx`, `*.csv`, markdown table, IP-XACT XML
@@ -23,14 +23,14 @@ The result must compile, run `<ip>_sanity_test`, run
 
 | Dimension | v1 scope | Planned |
 |---|---|---|
-| Bus | APB slave only | AHB, AXI-Lite |
+| Bus | APB slave, AHB-Lite slave | AXI-Lite |
 | Simulator | VCS | xrun, vsim |
 | Ref model | none, SV, C-DPI, Python-DPI | — |
 | Spec input | docx, pdf, md | — |
 | Reg input | xlsx, csv, md, IP-XACT | — |
 
 If the user asks for anything outside this table, say so and offer the
-closest in-scope alternative. Do not silently generate an AXI/AHB
+closest in-scope alternative. Do not silently generate an AXI
 environment just because the DUT has those ports.
 
 Do not use this skill for debugging an existing UVM environment, formal
@@ -80,34 +80,35 @@ Prefer an existing filelist. Otherwise scan `rtl/`, `src/`, `design/`,
 If no RTL exists, generate a stub only when the user confirms.
 
 Infer top module using AST tooling if available; regex inference is
-medium confidence. If top is ambiguous, ask. Record exact APB signal
+medium confidence. If top is ambiguous, ask. Record exact APB/AHB signal
 names and widths in `rtl_discovery.yaml`; never normalize case.
 
 For details, load `references/rtl_discovery.md` and
 `references/rtl_stub.md`.
 
-### Existing APB VIP
+### Existing Bus VIP
 
-If the user says they already have an APB VIP, ask for only:
+If the user says they already have an APB or AHB VIP, ask for only:
 
-- `apb_vip_path`
+- `<bus>_vip_path`
 - desired reuse level: `import_only` or `drive_with_vip`
 
 Use:
 
 ```yaml
-apb_vip_source: reuse_my_vip
-apb_vip_path: <path>
-apb_vip_reuse_level: import_only   # default
+bus_protocol: apb                  # or ahb
+apb_vip_source: reuse_my_vip       # or ahb_vip_source
+apb_vip_path: <path>               # or ahb_vip_path
+apb_vip_reuse_level: import_only   # or ahb_vip_reuse_level; default
 ```
 
 `import_only` means scaffold imports the VIP into the compile tree and
 keeps built-in tests on `tb_api`. `drive_with_vip` means Phase 5 must
-also generate/adapt glue so the user's VIP can drive a minimal APB
+also generate/adapt glue so the user's VIP can drive a minimal bus
 read/write smoke sequence. Do not guess third-party VIP APIs in Phase 4.
 
-Load `references/apb_external_vip.md` before implementing or fixing
-external VIP reuse.
+Load `references/apb_external_vip.md` or `references/ahb_external_vip.md`
+before implementing or fixing external VIP reuse.
 
 ## Phase 2: Intake
 
@@ -115,13 +116,13 @@ Ask unresolved items in small batches. Questions to ask only when not
 already known:
 
 - RTL state: found, external path, generated stub, none
-- bus protocol: APB only
-- APB VIP source: generate fresh, reuse existing VIP
+- bus protocol: APB or AHB
+- bus VIP source: generate fresh, reuse existing VIP
 - external VIP reuse level: import only, drive with VIP
 - reference model language: none, SV, C-DPI, Python-DPI
-- clock/reset: `pclk` frequency, `presetn` polarity, reset cycles
+- clock/reset: `pclk/presetn` or `hclk/hresetn` frequency, polarity, reset cycles
 - UVM version: default 1.2 unless user specifies otherwise
-- `paddr` width: default 12
+- address width: `paddr_width` or `haddr_width`, default 12
 - endianness for multi-word arrays
 - coverage: enabled or skipped
 - required extra smoke tests
@@ -164,13 +165,15 @@ Key scaffold rules:
 - write lowercase `script/makefile`
 - write `script/tb.f` for tb-side sources
 - never copy or modify user RTL
-- if `apb_vip_source: generate_fresh`, emit `tb/apb_agt_top/`
+- if `<bus>_vip_source: generate_fresh`, emit `tb/<bus>_agt_top/`
 - if `reuse_my_vip`, emit `tb/external_vip.f` and skip fresh agent files
 - keep `tb_api` generated in all modes
-- generate `top/<ip>_tb_top.sv`, `tb/apb_if.sv`, RAL, tests, audit
+- generate `top/<ip>_tb_top.sv`, `tb/<bus>_if.sv`, RAL, tests, audit
 
-For APB generation, load `references/apb.md`. For external VIP reuse,
-load `references/apb_external_vip.md`. For top wiring, load
+For APB generation, load `references/apb.md`. For AHB generation, load
+`references/ahb.md`. For external VIP reuse, load
+`references/apb_external_vip.md` or `references/ahb_external_vip.md`.
+For top wiring, load
 `references/top_sv.md`. For Makefile, load
 `references/makefile_contract.md`. For `tb_api`, load
 `references/tb_api.md`. For DPI, load `references/refm_dpi.md`.
@@ -272,6 +275,8 @@ Load only the relevant file for the current phase.
 | `references/top_sv.md` | top/interface wiring |
 | `references/apb.md` | generated APB agent |
 | `references/apb_external_vip.md` | existing APB VIP reuse |
+| `references/ahb.md` | generated AHB-Lite agent |
+| `references/ahb_external_vip.md` | existing AHB VIP reuse |
 | `references/spec_parsing.md` | parser rules |
 | `references/registers_yaml_schema.md` | normalized registers |
 | `references/ral_gen.md` | RAL generation |

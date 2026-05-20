@@ -12,7 +12,7 @@ Write:
 work/_gen_audit/rtl_discovery.yaml
 ```
 
-This file records the exact RTL files, top module, APB signal names,
+This file records the exact RTL files, top module, APB/AHB signal names,
 non-bus pads, and any wrapper address mapping. It is generated from user
 RTL or user filelists. Do not edit user RTL to make discovery easier.
 
@@ -36,7 +36,7 @@ files:
   - {path: $PROJ_DIR/rtl/uart_regs.v, role: leaf, order: 2}
   - {path: $PROJ_DIR/rtl/uart_apb_wrap.v, role: top, order: 20}
 
-apb_interface:
+apb_interface:                    # use ahb_interface when bus_protocol: ahb
   pclk: pclk
   presetn: presetn
   psel: psel
@@ -61,8 +61,27 @@ wrapper_address_map:
     - "APB byte offset N*4 maps to inner word index N."
 ```
 
+For AHB-Lite, use:
+
+```yaml
+ahb_interface:
+  hclk: hclk
+  hresetn: hresetn
+  hsel: hsel
+  haddr:  {name: haddr,  width: 12}
+  htrans: htrans
+  hwrite: hwrite
+  hsize: hsize
+  hburst: hburst
+  hprot: hprot
+  hwdata: {name: hwdata, width: 32}
+  hrdata: {name: hrdata, width: 32}
+  hready: hready
+  hresp: hresp
+```
+
 `scripts/scaffold.py` currently consumes `top_module.name`,
-`files[*].path`, `rtl_dir`, `apb_interface`, and `other_pads`.
+`files[*].path`, `rtl_dir`, the bus interface block, and `other_pads`.
 `wrapper_address_map` is documentation/audit today; future parser
 scripts should use it to cross-check `registers.yaml` offsets.
 
@@ -98,7 +117,7 @@ Prefer structural tools over regex:
 | filename heuristic only | low | Ask user before scaffold |
 
 If multiple candidate tops remain, prefer wrappers whose module/file name
-contains `apb`, `apb_wrap`, `reg_if`, or the IP name. If still
+contains the selected bus (`apb`, `ahb`), `<bus>_wrap`, `reg_if`, or the IP name. If still
 ambiguous, ask the user. Do not silently pick a random uninstantiated
 module.
 
@@ -142,6 +161,37 @@ names. Match common variants only for discovery:
 If `pready` or `pslverr` is absent but the RTL is otherwise APB-like,
 ask the user before tying defaults. Do not infer missing error/ready
 behavior without an explicit answer.
+
+## AHB Port Discovery
+
+The generated top expects AHB-Lite slave semantics:
+
+- one clock: `hclk`
+- one active-low reset: `hresetn`
+- control: `hsel`, `htrans`, `hwrite`, `hsize`, `hburst`, `hprot`
+- address: `haddr`
+- write data: `hwdata`
+- read data: `hrdata`
+- response/ready: `hready`, `hresp`
+
+Do not normalize case in the emitted names; use exact RTL port names.
+Match common variants only for discovery:
+
+| Canonical | Common variants |
+|---|---|
+| `hclk` | `HCLK`, `clk`, `ahb_clk` |
+| `hresetn` | `HRESETn`, `hreset_n`, `rst_n`, `resetn` |
+| `hsel` | `HSEL`, `hsel_i`, `ahb_hsel` |
+| `htrans` | `HTRANS`, `htrans_i` |
+| `hwrite` | `HWRITE`, `hwrite_i`, `wr` |
+| `haddr` | `HADDR`, `addr`, `ahb_addr` |
+| `hsize` | `HSIZE`, `hsize_i` |
+| `hburst` | `HBURST`, `hburst_i` |
+| `hprot` | `HPROT`, `hprot_i` |
+| `hwdata` | `HWDATA`, `wdata`, `ahb_wdata` |
+| `hrdata` | `HRDATA`, `rdata`, `ahb_rdata` |
+| `hready` | `HREADY`, `ready`, `ahb_ready` |
+| `hresp` | `HRESP`, `resp`, `error` |
 
 ## Non-bus Pads
 

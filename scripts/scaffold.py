@@ -15,14 +15,14 @@ Writes:
     .prj_top
     script/{makefile, setup.sh, check_env.sh, design.f, tb.f}
     top/<ip>_tb_top.sv
-    tb/apb_if.sv
-    tb/apb_agt_top/{apb_agent.sv, apb_agt_config.sv, apb_trans.sv,
-                    apb_driver.sv, apb_monitor.sv, apb_sequencer.sv,
-                    apb_sequence.sv}
+    tb/<bus>_if.sv
+    tb/<bus>_agt_top/{<bus>_agent.sv, <bus>_agt_config.sv, <bus>_trans.sv,
+                      <bus>_driver.sv, <bus>_monitor.sv, <bus>_sequencer.sv,
+                      <bus>_sequence.sv}
     tb/tb_api/{tb_api_pkg.sv, tb_api_primitives.svh}
     tb/dpi/{<ip>_ref_pkg.sv, <ip>_dpi_proto.h}     # if c_dpi
     tb/ral/<ip>_reg_block.sv
-    tb/ral/<ip>_apb_adapter.sv                      # if generating fresh APB agent
+    tb/ral/<ip>_<bus>_adapter.sv                    # if generating fresh agent
     test/<ip>_pkg.sv (sanity + reg_access + random_seq + smoke)
     test/sv_list
     work/_gen_audit/scaffold_audit.json
@@ -31,7 +31,7 @@ Symlink guard: any write target whose realpath escapes ip_root is
 refused with a non-zero exit and a message. No writes are performed
 if any target fails the guard (atomic).
 
-This file is the v1.2 first-working-draft for APB agent and RAL
+This file is the v1.3 first-working-draft for APB/AHB agent and RAL
 generation; corner cases (multi-clock, py_dpi, full external VIP
 drive glue) are still deferred to references.
 """
@@ -91,22 +91,26 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _validate_intake(intake: dict) -> None:
-    required = ["ip_name", "bus_protocol", "ref_model_language", "uvm_version", "paddr_width"]
+    required = ["ip_name", "bus_protocol", "ref_model_language", "uvm_version"]
     missing = [k for k in required if k not in intake]
     if missing:
         sys.exit(f"FATAL: intake.yaml missing keys: {missing}")
-    if intake["bus_protocol"] != "apb":
-        sys.exit(f"FATAL: v1.1 only supports apb (got {intake['bus_protocol']!r})")
-    vip_source = intake.get("apb_vip_source", "generate_fresh")
+    bus = intake["bus_protocol"]
+    if bus not in ("apb", "ahb"):
+        sys.exit(f"FATAL: supported bus_protocol values are apb, ahb (got {bus!r})")
+    width_key = "paddr_width" if bus == "apb" else "haddr_width"
+    if width_key not in intake:
+        sys.exit(f"FATAL: intake.yaml missing key for {bus}: {width_key}")
+    vip_source = intake.get(f"{bus}_vip_source", "generate_fresh")
     if vip_source not in ("generate_fresh", "reuse_my_vip"):
-        sys.exit(f"FATAL: unsupported apb_vip_source: {vip_source!r}")
-    if vip_source == "reuse_my_vip" and "apb_vip_path" not in intake:
-        sys.exit("FATAL: reuse_my_vip requires intake.yaml key: apb_vip_path")
-    reuse_level = intake.get("apb_vip_reuse_level", "import_only")
+        sys.exit(f"FATAL: unsupported {bus}_vip_source: {vip_source!r}")
+    if vip_source == "reuse_my_vip" and f"{bus}_vip_path" not in intake:
+        sys.exit(f"FATAL: reuse_my_vip requires intake.yaml key: {bus}_vip_path")
+    reuse_level = intake.get(f"{bus}_vip_reuse_level", "import_only")
     if reuse_level not in ("import_only", "drive_with_vip"):
-        sys.exit(f"FATAL: unsupported apb_vip_reuse_level: {reuse_level!r}")
-    if vip_source != "reuse_my_vip" and "apb_vip_reuse_level" in intake:
-        sys.exit("FATAL: apb_vip_reuse_level is valid only with reuse_my_vip")
+        sys.exit(f"FATAL: unsupported {bus}_vip_reuse_level: {reuse_level!r}")
+    if vip_source != "reuse_my_vip" and f"{bus}_vip_reuse_level" in intake:
+        sys.exit(f"FATAL: {bus}_vip_reuse_level is valid only with reuse_my_vip")
 
 
 def _resolve_input_path(raw: str, ip_root: Path) -> Path:
@@ -114,14 +118,14 @@ def _resolve_input_path(raw: str, ip_root: Path) -> Path:
     return Path(expanded).expanduser().resolve()
 
 
-def _scan_external_vip(raw_path: str, ip_root: Path) -> dict[str, Any]:
+def _scan_external_vip(raw_path: str, ip_root: Path, bus: str) -> dict[str, Any]:
     vip_root = _resolve_input_path(raw_path, ip_root)
     if not vip_root.is_dir():
-        sys.exit(f"FATAL: apb_vip_path is not a directory: {vip_root}")
+        sys.exit(f"FATAL: {bus}_vip_path is not a directory: {vip_root}")
 
     sv_files = sorted(vip_root.rglob("*.sv"))
     if not sv_files:
-        sys.exit(f"FATAL: no SystemVerilog files found under apb_vip_path: {vip_root}")
+        sys.exit(f"FATAL: no SystemVerilog files found under {bus}_vip_path: {vip_root}")
 
     packages: list[tuple[str, Path]] = []
     agents: list[tuple[str, Path]] = []
@@ -162,6 +166,27 @@ def _scan_external_vip(raw_path: str, ip_root: Path) -> dict[str, Any]:
         "incdirs": incdirs,
         "compile_units": compile_units,
     }
+
+
+def _bus(intake: dict) -> str:
+    return intake.get("bus_protocol", "apb")
+
+
+def _addr_width_key(bus: str) -> str:
+    return "paddr_width" if bus == "apb" else "haddr_width"
+
+
+def _addr_width(intake: dict) -> int:
+    bus = _bus(intake)
+    return int(intake.get(_addr_width_key(bus), 12))
+
+
+def _vip_source(intake: dict) -> str:
+    return intake.get(f"{_bus(intake)}_vip_source", "generate_fresh")
+
+
+def _vip_reuse_level(intake: dict) -> str:
+    return intake.get(f"{_bus(intake)}_vip_reuse_level", "import_only")
 
 
 def _pick_sanity_target(regs: list[dict]) -> tuple[int, int]:
@@ -308,24 +333,28 @@ def emit_makefile(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
     )
 
 
-def emit_tb_f(ip: str, has_dpi: bool, vip_source: str) -> str:
+def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str) -> str:
     tb_root = "$PROJ_DIR/tb"
     test_root = "$PROJ_DIR/test"
     top_root = "$PROJ_DIR/top"
+    if_name = "apb_if.sv" if bus == "apb" else "ahb_if.sv"
+    agt_dir = "apb_agt_top" if bus == "apb" else "ahb_agt_top"
+    agent_file = "apb_agent.sv" if bus == "apb" else "ahb_agent.sv"
+    adapter_file = f"{ip}_apb_adapter.sv" if bus == "apb" else f"{ip}_ahb_adapter.sv"
     lines = [
         f"+incdir+{tb_root}",
         f"+incdir+{tb_root}/tb_api",
         f"+incdir+{tb_root}/ral",
         f"+incdir+{test_root}",
         f"+incdir+{top_root}",
-        f"{tb_root}/apb_if.sv",
+        f"{tb_root}/{if_name}",
         f"{tb_root}/tb_api/tb_api_pkg.sv",
         f"{tb_root}/ral/{ip}_reg_block.sv",
     ]
     if vip_source == "generate_fresh":
-        lines.insert(1, f"+incdir+{tb_root}/apb_agt_top")
-        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"{tb_root}/apb_agt_top/apb_agent.sv")
-        lines.append(f"{tb_root}/ral/{ip}_apb_adapter.sv")
+        lines.insert(1, f"+incdir+{tb_root}/{agt_dir}")
+        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"{tb_root}/{agt_dir}/{agent_file}")
+        lines.append(f"{tb_root}/ral/{adapter_file}")
     else:
         lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"-f {tb_root}/external_vip.f")
     if has_dpi:
@@ -357,12 +386,39 @@ def emit_apb_if() -> str:
         """)
 
 
+def emit_ahb_if() -> str:
+    return textwrap.dedent("""\
+        `ifndef AHB_IF_SV
+        `define AHB_IF_SV
+        interface ahb_if #(int ADDR_W = 12, int DATA_W = 32) (
+            input logic hclk,
+            input logic hresetn
+        );
+            logic              hsel;
+            logic [ADDR_W-1:0] haddr;
+            logic [1:0]        htrans;
+            logic              hwrite;
+            logic [2:0]        hsize;
+            logic [2:0]        hburst;
+            logic [3:0]        hprot;
+            logic [DATA_W-1:0] hwdata;
+            logic [DATA_W-1:0] hrdata;
+            logic              hready;
+            logic              hresp;
+        endinterface
+        `endif
+        """)
+
+
 def emit_tb_top(intake: dict, rtl: dict) -> str:
     ip = intake["ip_name"]
+    bus = _bus(intake)
     top = rtl["top_module"]["name"]
-    paddr_w = intake.get("paddr_width", 12)
-    rst_cycles = intake.get("reset", {}).get("presetn_duration_cycles", 16)
-    half_period = intake.get("clock", {}).get("pclk_period_ns", 10) // 2
+    addr_w = _addr_width(intake)
+    clk_name = "pclk" if bus == "apb" else "hclk"
+    rst_name = "presetn" if bus == "apb" else "hresetn"
+    rst_cycles = intake.get("reset", {}).get(f"{rst_name}_duration_cycles", 16)
+    half_period = intake.get("clock", {}).get(f"{clk_name}_period_ns", 10) // 2
 
     # Collect non-bus pads from rtl_discovery
     pads = rtl.get("other_pads", []) or []
@@ -382,63 +438,85 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
     pad_decls_str = "\n".join(pad_decls) if pad_decls else "    // (no non-bus pads)"
     pad_connects_str = (",\n" + ",\n".join(pad_connects)) if pad_connects else ""
 
-    return textwrap.dedent(f"""\
-        // gen-tb generated tb top for {ip}.
-        // Interface receives clk/rst via input ports (no dual-drive).
-        // Non-bus DUT pads tied to protocol-idle defaults at this level.
-        `timescale 1ns/1ps
+    if bus == "apb":
+        bus_inst = f"apb_if #(.ADDR_W({addr_w}), .DATA_W(32)) apb (.pclk(pclk), .presetn(presetn));"
+        dut_bus = textwrap.dedent("""\
+            .pclk    (pclk),     .presetn (presetn),
+            .psel    (apb.psel), .penable (apb.penable),
+            .pwrite  (apb.pwrite), .paddr  (apb.paddr),
+            .pwdata  (apb.pwdata), .prdata (apb.prdata),
+            .pready  (apb.pready), .pslverr(apb.pslverr)""").rstrip()
+        config = textwrap.dedent("""\
+            uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
+            tb_api::set_vif(apb);""").rstrip()
+    else:
+        bus_inst = f"ahb_if #(.ADDR_W({addr_w}), .DATA_W(32)) ahb (.hclk(hclk), .hresetn(hresetn));"
+        dut_bus = textwrap.dedent("""\
+            .hclk    (hclk),        .hresetn(hresetn),
+            .hsel    (ahb.hsel),    .haddr  (ahb.haddr),
+            .htrans  (ahb.htrans),  .hwrite (ahb.hwrite),
+            .hsize   (ahb.hsize),   .hburst (ahb.hburst),
+            .hprot   (ahb.hprot),   .hwdata (ahb.hwdata),
+            .hrdata  (ahb.hrdata),  .hready (ahb.hready),
+            .hresp   (ahb.hresp)""").rstrip()
+        config = textwrap.dedent("""\
+            uvm_config_db#(tb_api::vif_t)::set(null, "*", "ahb_vif", ahb);
+            tb_api::set_vif(ahb);""").rstrip()
 
-        module {ip}_tb_top;
-            import uvm_pkg::*;
-            `include "uvm_macros.svh"
+    dut_bus_block = textwrap.indent(dut_bus, "        ")
+    config_block = textwrap.indent(config, "        ")
+    return f"""// gen-tb generated tb top for {ip}.
+// Interface receives clk/rst via input ports (no dual-drive).
+// Non-bus DUT pads tied to protocol-idle defaults at this level.
+`timescale 1ns/1ps
 
-            // ---- clock & reset (top owns the drive) ----
-            logic pclk = 0;
-            logic presetn = 0;
-            always #{half_period} pclk = ~pclk;
+module {ip}_tb_top;
+    import uvm_pkg::*;
+    `include "uvm_macros.svh"
 
-            // ---- interface ----
-            apb_if #(.ADDR_W({paddr_w}), .DATA_W(32)) apb (.pclk(pclk), .presetn(presetn));
+    // ---- clock & reset (top owns the drive) ----
+    logic {clk_name} = 0;
+    logic {rst_name} = 0;
+    always #{half_period} {clk_name} = ~{clk_name};
 
-            // ---- non-bus DUT pad defaults ----
-        {pad_decls_str}
+    // ---- interface ----
+    {bus_inst}
 
-            // ---- DUT ----
-            {top} u_dut (
-                .pclk    (pclk),     .presetn (presetn),
-                .psel    (apb.psel), .penable (apb.penable),
-                .pwrite  (apb.pwrite), .paddr  (apb.paddr),
-                .pwdata  (apb.pwdata), .prdata (apb.prdata),
-                .pready  (apb.pready), .pslverr(apb.pslverr){pad_connects_str}
-            );
+    // ---- non-bus DUT pad defaults ----
+{pad_decls_str}
 
-            // ---- reset sequence ----
-            initial begin
-                presetn = 0;
-                repeat ({rst_cycles}) @(posedge pclk);
-                presetn = 1;
-            end
+    // ---- DUT ----
+    {top} u_dut (
+{dut_bus_block}{pad_connects_str}
+    );
 
-            // ---- UVM entry ----
-            initial begin
-                uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
-                tb_api::set_vif(apb);
-                run_test();
-            end
-        endmodule
-        """)
+    // ---- reset sequence ----
+    initial begin
+        {rst_name} = 0;
+        repeat ({rst_cycles}) @(posedge {clk_name});
+        {rst_name} = 1;
+    end
+
+    // ---- UVM entry ----
+    initial begin
+{config_block}
+        run_test();
+    end
+endmodule
+"""
 
 
-def emit_tb_api_pkg(paddr_w: int) -> str:
+def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
+    if_type = "apb_if" if bus == "apb" else "ahb_if"
     return textwrap.dedent(f"""\
         `ifndef TB_API_PKG_SV
         `define TB_API_PKG_SV
         package tb_api;
             import uvm_pkg::*;
             `include "uvm_macros.svh"
-            parameter int  ADDR_W = {paddr_w};
+            parameter int  ADDR_W = {addr_w};
             parameter int  DATA_W = 32;
-            typedef virtual apb_if #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;
+            typedef virtual {if_type} #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;
             vif_t vif;
             function automatic void set_vif(vif_t v); vif = v; endfunction
             `include "tb_api_primitives.svh"
@@ -447,7 +525,117 @@ def emit_tb_api_pkg(paddr_w: int) -> str:
         """)
 
 
-def emit_tb_api_primitives() -> str:
+def emit_tb_api_primitives(bus: str) -> str:
+    if bus == "ahb":
+        return textwrap.dedent("""\
+            // ====================================================================
+            // tb_api primitives — AHB-Lite single-transfer master + status helpers.
+            // ====================================================================
+
+            function automatic void _require_vif();
+                if (vif == null) `uvm_fatal("TB_API",
+                    "vif not set — call tb_api::set_vif(...) in top initial block")
+            endfunction
+
+            task automatic _idle();
+                vif.hsel    <= 1'b0;
+                vif.htrans  <= 2'b00;
+                vif.hwrite  <= 1'b0;
+                vif.haddr   <= '0;
+                vif.hsize   <= 3'b010;
+                vif.hburst  <= 3'b000;
+                vif.hprot   <= 4'b0011;
+                vif.hwdata  <= '0;
+            endtask
+
+            task automatic write(input logic [ADDR_W-1:0] addr,
+                                 input logic [DATA_W-1:0] data);
+                _require_vif();
+                @(posedge vif.hclk);
+                vif.hsel    <= 1'b1;
+                vif.htrans  <= 2'b10;
+                vif.hwrite  <= 1'b1;
+                vif.haddr   <= addr;
+                vif.hsize   <= 3'b010;
+                vif.hburst  <= 3'b000;
+                vif.hprot   <= 4'b0011;
+                vif.hwdata  <= data;
+                @(posedge vif.hclk);
+                while (vif.hready !== 1'b1) @(posedge vif.hclk);
+                _idle();
+            endtask
+
+            task automatic read(input  logic [ADDR_W-1:0] addr,
+                                output logic [DATA_W-1:0] data);
+                _require_vif();
+                @(posedge vif.hclk);
+                vif.hsel    <= 1'b1;
+                vif.htrans  <= 2'b10;
+                vif.hwrite  <= 1'b0;
+                vif.haddr   <= addr;
+                vif.hsize   <= 3'b010;
+                vif.hburst  <= 3'b000;
+                vif.hprot   <= 4'b0011;
+                @(posedge vif.hclk);
+                while (vif.hready !== 1'b1) @(posedge vif.hclk);
+                data = vif.hrdata;
+                _idle();
+            endtask
+
+            task automatic write_array(input logic [ADDR_W-1:0] base,
+                                        input int                stride,
+                                        input logic [DATA_W-1:0] data[]);
+                int i;
+                for (i = 0; i < data.size(); i++) write(base + i*stride, data[i]);
+            endtask
+
+            task automatic read_array(input  logic [ADDR_W-1:0] base,
+                                       input  int                stride,
+                                       input  int                count,
+                                       output logic [DATA_W-1:0] data[]);
+                int i;
+                data = new[count];
+                for (i = 0; i < count; i++) read(base + i*stride, data[i]);
+            endtask
+
+            task automatic expect_reg(input logic [ADDR_W-1:0] addr,
+                                       input logic [DATA_W-1:0] expected,
+                                       input string             tag = "EXPECT");
+                logic [DATA_W-1:0] got;
+                read(addr, got);
+                if (got !== expected)
+                    `uvm_error(tag, $sformatf("@0x%0h got=0x%08h expected=0x%08h",
+                                              addr, got, expected))
+                else
+                    `uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, got), UVM_LOW)
+            endtask
+
+            task automatic wait_status_flag(
+                    input logic [ADDR_W-1:0] status_addr,
+                    input int                bit_idx,
+                    input bit                expected = 1'b1,
+                    input bit                wait_low_first = 1'b0,
+                    input int                timeout_polls = 1000,
+                    input string             tag = "WAIT");
+                int  n;
+                logic [DATA_W-1:0] rdata;
+                if (wait_low_first) begin
+                    n = timeout_polls;
+                    do begin
+                        read(status_addr, rdata);
+                        if (rdata[bit_idx] !== expected) break;
+                        if (--n == 0) `uvm_fatal(tag, "timeout waiting for status bit to drop")
+                    end while (1);
+                end
+                n = timeout_polls;
+                do begin
+                    read(status_addr, rdata);
+                    if (rdata[bit_idx] === expected) return;
+                    if (--n == 0) `uvm_fatal(tag, $sformatf("timeout waiting for bit %0d == %0d", bit_idx, expected))
+                end while (1);
+            endtask
+            """)
+
     # Body verbatim from references/tb_api.md
     return textwrap.dedent("""\
         // ====================================================================
@@ -724,6 +912,196 @@ def emit_apb_sequence() -> str:
                     start_item(tr);
                     if (!tr.randomize() with { write == 1'b0; })
                         `uvm_fatal("RAND", "apb_trans randomize failed")
+                    if (legal_addrs.size() != 0)
+                        tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
+                    finish_item(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_ahb_agent_pkg() -> str:
+    return textwrap.dedent("""\
+        `ifndef AHB_AGENT_SV
+        `define AHB_AGENT_SV
+        package ahb_agt_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            `include "uvm_macros.svh"
+
+            `include "ahb_agt_config.sv"
+            `include "ahb_trans.sv"
+            `include "ahb_sequencer.sv"
+            `include "ahb_driver.sv"
+            `include "ahb_monitor.sv"
+            `include "ahb_sequence.sv"
+
+            class ahb_agent extends uvm_agent;
+                `uvm_component_utils(ahb_agent)
+                ahb_driver     drv;
+                ahb_monitor    mon;
+                ahb_sequencer  sqr;
+                ahb_agt_config cfg;
+
+                function new(string name, uvm_component parent = null);
+                    super.new(name, parent);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    if (!uvm_config_db#(ahb_agt_config)::get(this, "", "cfg", cfg))
+                        `uvm_fatal("CFG", "ahb_agt_config missing")
+                    if (cfg.vif != null)
+                        uvm_config_db#(vif_t)::set(this, "*", "ahb_vif", cfg.vif);
+                    mon = ahb_monitor::type_id::create("mon", this);
+                    if (cfg.is_active == UVM_ACTIVE) begin
+                        drv = ahb_driver::type_id::create("drv", this);
+                        sqr = ahb_sequencer::type_id::create("sqr", this);
+                    end
+                endfunction
+
+                function void connect_phase(uvm_phase phase);
+                    super.connect_phase(phase);
+                    if (cfg.is_active == UVM_ACTIVE)
+                        drv.seq_item_port.connect(sqr.seq_item_export);
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
+def emit_ahb_agt_config() -> str:
+    return textwrap.dedent("""\
+        class ahb_agt_config extends uvm_object;
+            `uvm_object_utils(ahb_agt_config)
+            uvm_active_passive_enum is_active = UVM_ACTIVE;
+            vif_t vif;
+
+            function new(string name = "ahb_agt_config");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_ahb_trans() -> str:
+    return textwrap.dedent("""\
+        class ahb_trans extends uvm_sequence_item;
+            rand logic [ADDR_W-1:0] addr;
+            rand logic [DATA_W-1:0] data;
+            rand bit                write;
+            logic [DATA_W-1:0]      rdata;
+            bit                     resp;
+
+            `uvm_object_utils_begin(ahb_trans)
+                `uvm_field_int(addr,  UVM_ALL_ON)
+                `uvm_field_int(data,  UVM_ALL_ON)
+                `uvm_field_int(write, UVM_ALL_ON)
+                `uvm_field_int(rdata, UVM_ALL_ON | UVM_NOCOMPARE)
+                `uvm_field_int(resp,  UVM_ALL_ON | UVM_NOCOMPARE)
+            `uvm_object_utils_end
+
+            function new(string name = "ahb_trans");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_ahb_sequencer() -> str:
+    return textwrap.dedent("""\
+        typedef uvm_sequencer #(ahb_trans) ahb_sequencer;
+        """)
+
+
+def emit_ahb_driver() -> str:
+    return textwrap.dedent("""\
+        class ahb_driver extends uvm_driver #(ahb_trans);
+            `uvm_component_utils(ahb_driver)
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "ahb_vif", vif))
+                    `uvm_fatal("CFG", "ahb_vif missing")
+                tb_api::set_vif(vif);
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                ahb_trans tr;
+                forever begin
+                    seq_item_port.get_next_item(tr);
+                    if (tr.write)
+                        tb_api::write(tr.addr, tr.data);
+                    else
+                        tb_api::read(tr.addr, tr.rdata);
+                    tr.resp = vif.hresp;
+                    seq_item_port.item_done();
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_ahb_monitor() -> str:
+    return textwrap.dedent("""\
+        class ahb_monitor extends uvm_monitor;
+            `uvm_component_utils(ahb_monitor)
+            uvm_analysis_port #(ahb_trans) ap;
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+                ap = new("ap", this);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "ahb_vif", vif))
+                    `uvm_fatal("CFG", "ahb_vif missing")
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                ahb_trans tr;
+                forever begin
+                    @(posedge vif.hclk iff (vif.hsel & vif.htrans[1] & vif.hready));
+                    tr = ahb_trans::type_id::create("tr");
+                    tr.addr  = vif.haddr;
+                    tr.write = vif.hwrite;
+                    tr.data  = vif.hwdata;
+                    tr.rdata = vif.hrdata;
+                    tr.resp  = vif.hresp;
+                    ap.write(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_ahb_sequence() -> str:
+    return textwrap.dedent("""\
+        class ahb_sequence extends uvm_sequence #(ahb_trans);
+            `uvm_object_utils(ahb_sequence)
+            int unsigned n_transactions = 1;
+            logic [ADDR_W-1:0] legal_addrs[$];
+
+            function new(string name = "ahb_sequence");
+                super.new(name);
+            endfunction
+
+            task body();
+                ahb_trans tr;
+                repeat (n_transactions) begin
+                    tr = ahb_trans::type_id::create("tr");
+                    start_item(tr);
+                    if (!tr.randomize() with { write == 1'b0; })
+                        `uvm_fatal("RAND", "ahb_trans randomize failed")
                     if (legal_addrs.size() != 0)
                         tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
                     finish_item(tr);
@@ -1117,6 +1495,51 @@ def emit_apb_adapter(ip: str) -> str:
         """)
 
 
+def emit_ahb_adapter(ip: str) -> str:
+    return textwrap.dedent(f"""\
+        `ifndef {ip.upper()}_AHB_ADAPTER_SV
+        `define {ip.upper()}_AHB_ADAPTER_SV
+        package {ip}_ahb_adapter_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            import ahb_agt_pkg::*;
+            `include "uvm_macros.svh"
+
+            class {ip}_ahb_adapter extends uvm_reg_adapter;
+                `uvm_object_utils({ip}_ahb_adapter)
+
+                function new(string name = "{ip}_ahb_adapter");
+                    super.new(name);
+                    supports_byte_enable = 0;
+                    provides_responses   = 0;
+                endfunction
+
+                virtual function uvm_sequence_item reg2bus(const ref uvm_reg_bus_op rw);
+                    ahb_trans t = ahb_trans::type_id::create("t");
+                    t.addr  = rw.addr[ADDR_W-1:0];
+                    t.data  = rw.data[DATA_W-1:0];
+                    t.write = (rw.kind == UVM_WRITE);
+                    return t;
+                endfunction
+
+                virtual function void bus2reg(uvm_sequence_item bus_item, ref uvm_reg_bus_op rw);
+                    ahb_trans t;
+                    if (!$cast(t, bus_item)) begin
+                        `uvm_error("RAL_ADAPTER", "bus_item is not ahb_trans")
+                        rw.status = UVM_NOT_OK;
+                        return;
+                    end
+                    rw.kind   = t.write ? UVM_WRITE : UVM_READ;
+                    rw.addr   = t.addr;
+                    rw.data   = t.write ? t.data : t.rdata;
+                    rw.status = t.resp ? UVM_NOT_OK : UVM_IS_OK;
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
 def emit_dpi_ref_pkg(ip: str, dpi: dict) -> str:
     sv_imports = []
     for f in dpi["dpi_exports"]:
@@ -1177,8 +1600,15 @@ def emit_dpi_proto_h(ip: str, dpi: dict) -> str:
 
 def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
     ip = intake["ip_name"]
-    addr_w = intake.get("paddr_width", 12)
+    bus = _bus(intake)
+    addr_w = _addr_width(intake)
     sanity_addr, sanity_value = _pick_sanity_target(regs)
+    clk = "pclk" if bus == "apb" else "hclk"
+    rst = "presetn" if bus == "apb" else "hresetn"
+    agent_cls = f"{bus}_agent"
+    cfg_cls = f"{bus}_agt_config"
+    seq_cls = f"{bus}_sequence"
+    adapter_cls = f"{ip}_{bus}_adapter"
 
     addr_consts = []
     for r in regs:
@@ -1210,8 +1640,8 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
             function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
             task run_phase(uvm_phase phase);
                 phase.raise_objection(this);
-                wait (tb_api::vif.presetn === 1'b1);
-                repeat (4) @(posedge tb_api::vif.pclk);
+                wait (tb_api::vif.{rst} === 1'b1);
+                repeat (4) @(posedge tb_api::vif.{clk});
                 tb_api::expect_reg({addr_w}'h{sanity_addr:03X}, 32'h{sanity_value:08X}, "SANITY");
                 phase.drop_objection(this);
             endtask
@@ -1221,8 +1651,8 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
     random_seq_test = textwrap.dedent(f"""\
         class {ip}_random_seq_test extends uvm_test;
             `uvm_component_utils({ip}_random_seq_test)
-            apb_agent      agent;
-            apb_agt_config cfg;
+            {agent_cls}      agent;
+            {cfg_cls} cfg;
 
             function new(string n="{ip}_random_seq_test", uvm_component p=null);
                 super.new(n, p);
@@ -1230,18 +1660,18 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
 
             function void build_phase(uvm_phase phase);
                 super.build_phase(phase);
-                cfg = apb_agt_config::type_id::create("cfg");
+                cfg = {cfg_cls}::type_id::create("cfg");
                 cfg.vif = tb_api::vif;
-                uvm_config_db#(apb_agt_config)::set(this, "agent", "cfg", cfg);
-                agent = apb_agent::type_id::create("agent", this);
+                uvm_config_db#({cfg_cls})::set(this, "agent", "cfg", cfg);
+                agent = {agent_cls}::type_id::create("agent", this);
             endfunction
 
             task run_phase(uvm_phase phase);
-                apb_sequence seq;
+                {seq_cls} seq;
                 phase.raise_objection(this);
-                wait (tb_api::vif.presetn === 1'b1);
-                repeat (4) @(posedge tb_api::vif.pclk);
-                seq = apb_sequence::type_id::create("seq");
+                wait (tb_api::vif.{rst} === 1'b1);
+                repeat (4) @(posedge tb_api::vif.{clk});
+                seq = {seq_cls}::type_id::create("seq");
                 seq.n_transactions = 100;
                 seq.legal_addrs = '{{{legal_addr_list}}};
                 seq.start(agent.sqr);
@@ -1256,19 +1686,19 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         smoke_test = "    // DPI smoke test generation: see references/refm_dpi.md.\n"
         smoke_test += "    // v1.1 stub — hand-write the smoke test for now using tb_api::wait_status_flag.\n"
 
-    vip_source = intake.get("apb_vip_source", "generate_fresh")
-    agent_import = "    import apb_agt_pkg::*;" if vip_source == "generate_fresh" else ""
+    vip_source = _vip_source(intake)
+    agent_import = f"    import {bus}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
     ral_import = f"    import {ip}_ral_pkg::*;"
-    adapter_import = f"    import {ip}_apb_adapter_pkg::*;" if vip_source == "generate_fresh" else ""
+    adapter_import = f"    import {ip}_{bus}_adapter_pkg::*;" if vip_source == "generate_fresh" else ""
     random_seq_body = random_seq_test if vip_source == "generate_fresh" else ""
     if vip_source == "generate_fresh":
         reg_access_test = textwrap.dedent(f"""\
             class {ip}_reg_access_test extends uvm_test;
                 `uvm_component_utils({ip}_reg_access_test)
-                apb_agent         agent;
-                apb_agt_config    cfg;
+                {agent_cls}         agent;
+                {cfg_cls}    cfg;
                 {ip}_reg_block    ral;
-                {ip}_apb_adapter  adapter;
+                {adapter_cls}  adapter;
 
                 function new(string n="{ip}_reg_access_test", uvm_component p=null);
                     super.new(n,p);
@@ -1276,20 +1706,20 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
 
                 function void build_phase(uvm_phase phase);
                     super.build_phase(phase);
-                    cfg = apb_agt_config::type_id::create("cfg");
+                    cfg = {cfg_cls}::type_id::create("cfg");
                     cfg.vif = tb_api::vif;
-                    uvm_config_db#(apb_agt_config)::set(this, "agent", "cfg", cfg);
-                    agent = apb_agent::type_id::create("agent", this);
+                    uvm_config_db#({cfg_cls})::set(this, "agent", "cfg", cfg);
+                    agent = {agent_cls}::type_id::create("agent", this);
                     ral = {ip}_reg_block::type_id::create("ral");
                     ral.build();
-                    adapter = {ip}_apb_adapter::type_id::create("adapter");
+                    adapter = {adapter_cls}::type_id::create("adapter");
                 endfunction
 
                 task run_phase(uvm_phase phase);
                     {ip}_ral_access_seq seq;
                     phase.raise_objection(this);
-                    wait (tb_api::vif.presetn === 1'b1);
-                    repeat (4) @(posedge tb_api::vif.pclk);
+                    wait (tb_api::vif.{rst} === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.{clk});
                     ral.default_map.set_sequencer(agent.sqr, adapter);
                     ral.default_map.set_auto_predict(1);
                     seq = {ip}_ral_access_seq::type_id::create("seq");
@@ -1306,8 +1736,8 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 function new(string n="{ip}_reg_access_test", uvm_component p=null); super.new(n,p); endfunction
                 task run_phase(uvm_phase phase);
                     phase.raise_objection(this);
-                    wait (tb_api::vif.presetn === 1'b1);
-                    repeat (4) @(posedge tb_api::vif.pclk);
+                    wait (tb_api::vif.{rst} === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.{clk});
                     run_reg_access_reads("REG_ACCESS");
                     phase.drop_objection(this);
                 endtask
@@ -1370,13 +1800,14 @@ def main() -> int:
     _validate_intake(intake)
 
     ip = intake["ip_name"]
+    bus = _bus(intake)
     has_dpi = intake.get("ref_model_language") == "c_dpi"
     dpi = intake.get("ref_model_inputs") if has_dpi else None
-    paddr_w = intake.get("paddr_width", 12)
-    vip_source = intake.get("apb_vip_source", "generate_fresh")
-    vip_reuse_level = intake.get("apb_vip_reuse_level", "import_only")
+    addr_w = _addr_width(intake)
+    vip_source = _vip_source(intake)
+    vip_reuse_level = _vip_reuse_level(intake)
     external_vip = (
-        _scan_external_vip(intake["apb_vip_path"], ip_root)
+        _scan_external_vip(intake[f"{bus}_vip_path"], ip_root, bus)
         if vip_source == "reuse_my_vip"
         else None
     )
@@ -1388,27 +1819,42 @@ def main() -> int:
     plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(), True))
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
-    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, vip_source), False))
+    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source), False))
     plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl), False))
 
-    plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(paddr_w), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(), False))
+    if bus == "apb":
+        plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
+    else:
+        plan.append((ip_root / "tb" / "ahb_if.sv", emit_ahb_if(), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(bus, addr_w), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus), False))
     if vip_source == "generate_fresh":
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agt_config.sv", emit_apb_agt_config(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_trans.sv", emit_apb_trans(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_driver.sv", emit_apb_driver(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
-        plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
+        if bus == "apb":
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agt_config.sv", emit_apb_agt_config(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_trans.sv", emit_apb_trans(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_driver.sv", emit_apb_driver(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
+            plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
+        else:
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agent.sv", emit_ahb_agent_pkg(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agt_config.sv", emit_ahb_agt_config(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_trans.sv", emit_ahb_trans(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_driver.sv", emit_ahb_driver(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_monitor.sv", emit_ahb_monitor(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequencer.sv", emit_ahb_sequencer(), False))
+            plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequence.sv", emit_ahb_sequence(), False))
     else:
         plan.append((ip_root / "tb" / "external_vip.f", emit_external_vip_f(external_vip), False))
     plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
     if vip_source == "generate_fresh":
-        plan.append((ip_root / "tb" / "ral" / f"{ip}_apb_adapter.sv", emit_apb_adapter(ip), False))
+        if bus == "apb":
+            plan.append((ip_root / "tb" / "ral" / f"{ip}_apb_adapter.sv", emit_apb_adapter(ip), False))
+        else:
+            plan.append((ip_root / "tb" / "ral" / f"{ip}_ahb_adapter.sv", emit_ahb_adapter(ip), False))
 
     if has_dpi:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_ref_pkg.sv", emit_dpi_ref_pkg(ip, dpi), False))
@@ -1450,9 +1896,10 @@ def main() -> int:
         "files_written": written,
         "has_dpi": has_dpi,
         "register_count": len(regs),
-        "scaffold_version": "v1.2",
-        "apb_vip_source": vip_source,
-        "apb_vip_reuse_level": vip_reuse_level if vip_source == "reuse_my_vip" else None,
+        "scaffold_version": "v1.3",
+        "bus_protocol": bus,
+        f"{bus}_vip_source": vip_source,
+        f"{bus}_vip_reuse_level": vip_reuse_level if vip_source == "reuse_my_vip" else None,
         "external_vip": {
             "root": str(external_vip["root"]),
             "packages": external_vip["packages"],

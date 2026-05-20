@@ -21,14 +21,14 @@
 │   ├── tb.f                              tb-side filelist + incdirs (decouples from makefile)
 │   └── vcm.cfg                           coverage scope (optional)
 ├── top/
-│   ├── <ip>_tb_top.sv                    clocks, reset, DUT, apb_if instantiation
+│   ├── <ip>_tb_top.sv                    clocks, reset, DUT, bus interface instantiation
 │   └── <ip>_assertions.sv                bound assertions (deferred to v1.2)
 ├── tb/
-│   ├── apb_if.sv                         APB interface with input clk/rst (G12)
+│   ├── <bus>_if.sv                       APB/AHB interface with input clk/rst (G12)
 │   ├── tb_api/
 │   │   ├── tb_api_pkg.sv                 package header (regenerated each scaffold)
 │   │   └── tb_api_primitives.svh         load-bearing tasks (preserved by default; see tb_api.md)
-│   ├── apb_agt_top/                      v1.2 — full UVM agent (omitted in v1.1)
+│   ├── <bus>_agt_top/                    generated APB/AHB UVM agent
 │   ├── seq_lib/                          v1.2 — DV-persona sequences
 │   ├── ral/
 │   │   └── <ip>_reg_block.sv             RAL (v1.1 stub; v1.2 full per ral_gen.md)
@@ -68,7 +68,7 @@
 | `script/design.f` | yes | yes (from rtl_discovery.yaml) | no |
 | `script/tb.f` | yes | yes | no |
 | `top/<ip>_tb_top.sv` | yes | yes | mostly no; manual instance ties between regens get clobbered |
-| `tb/apb_if.sv` | yes | yes | no |
+| `tb/<bus>_if.sv` | yes | yes | no |
 | `tb/tb_api/tb_api_pkg.sv` | yes | yes (header only) | no |
 | `tb/tb_api/tb_api_primitives.svh` | yes | **only on `gen-tb refresh-primitives`** | yes — edits preserved |
 | `tb/ral/<ip>_reg_block.sv` | yes | yes | no (edit registers.yaml + re-scaffold) |
