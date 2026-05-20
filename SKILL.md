@@ -1,13 +1,14 @@
 ---
 name: gen-tb
-description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable APB/AHB-based UVM tb with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
+description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable APB / AHB-Lite / AXI4-Lite-based UVM tb with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
 ---
 
 # gen-tb — UVM Testbench Scaffold Generator
 
 ## Purpose
 
-Generate a directory-aligned UVM testbench for one APB or AHB-Lite slave IP from:
+Generate a directory-aligned UVM testbench for one APB / AHB-Lite slave or
+AXI4-Lite (slave or master) IP from:
 
 - behavioral spec: `*.docx`, `*.pdf`, `*.md`
 - register table: `*.xlsx`, `*.csv`, markdown table, IP-XACT XML
@@ -23,15 +24,16 @@ The result must compile, run `<ip>_sanity_test`, run
 
 | Dimension | v1 scope | Planned |
 |---|---|---|
-| Bus | APB slave, AHB-Lite slave | AXI-Lite |
+| Bus | APB slave, AHB-Lite slave, AXI4-Lite (slave or master) | AXI4 full |
 | Simulator | VCS | xrun, vsim |
 | Ref model | none, SV, C-DPI, Python-DPI | — |
 | Spec input | docx, pdf, md | — |
 | Reg input | xlsx, csv, md, IP-XACT | — |
 
 If the user asks for anything outside this table, say so and offer the
-closest in-scope alternative. Do not silently generate an AXI
-environment just because the DUT has those ports.
+closest in-scope alternative. AXI4 full (with bursts/IDs/outstanding) is
+out of scope; if the DUT has AXI ports but uses only single-beat
+transfers, generate the AXI4-Lite environment and note the assumption.
 
 Do not use this skill for debugging an existing UVM environment, formal
 verification, gate-level sim, DFT, or a multi-master SoC subsystem.
@@ -80,15 +82,19 @@ Prefer an existing filelist. Otherwise scan `rtl/`, `src/`, `design/`,
 If no RTL exists, generate a stub only when the user confirms.
 
 Infer top module using AST tooling if available; regex inference is
-medium confidence. If top is ambiguous, ask. Record exact APB/AHB signal
-names and widths in `rtl_discovery.yaml`; never normalize case.
+medium confidence. If top is ambiguous, ask. Record exact APB / AHB /
+AXI4-Lite signal names and widths in `rtl_discovery.yaml`; never
+normalize case. For AXI4-Lite, also record which side of the bus the DUT
+sits on (`bus_direction: slave|master`) — slave is the default and
+mirrors APB/AHB; master means TB provides a slave responder.
 
 For details, load `references/rtl_discovery.md` and
 `references/rtl_stub.md`.
 
 ### Existing Bus VIP
 
-If the user says they already have an APB or AHB VIP, ask for only:
+If the user says they already have an APB, AHB, or AXI4-Lite VIP, ask
+for only:
 
 - `<bus>_vip_path`
 - desired reuse level: `import_only` or `drive_with_vip`
@@ -96,10 +102,10 @@ If the user says they already have an APB or AHB VIP, ask for only:
 Use:
 
 ```yaml
-bus_protocol: apb                  # or ahb
-apb_vip_source: reuse_my_vip       # or ahb_vip_source
-apb_vip_path: <path>               # or ahb_vip_path
-apb_vip_reuse_level: import_only   # or ahb_vip_reuse_level; default
+bus_protocol: apb                  # or ahb, axi_lite
+apb_vip_source: reuse_my_vip       # or ahb_vip_source / axi_lite_vip_source
+apb_vip_path: <path>               # or ahb_vip_path / axi_lite_vip_path
+apb_vip_reuse_level: import_only   # or ahb_vip_reuse_level / axi_lite_vip_reuse_level; default
 ```
 
 `import_only` means scaffold imports the VIP into the compile tree and
@@ -109,8 +115,9 @@ read/write smoke sequence. Do not guess third-party VIP APIs in Phase 4.
 For `import_only`, scaffold may skip vendor `*_test_pkg.sv` files that
 only serve the VIP's standalone harness.
 
-Load `references/apb_external_vip.md` or `references/ahb_external_vip.md`
-before implementing or fixing external VIP reuse.
+Load `references/apb_external_vip.md`, `references/ahb_external_vip.md`,
+or `references/axi_lite_external_vip.md` before implementing or fixing
+external VIP reuse.
 
 ## Phase 2: Intake
 
@@ -118,13 +125,14 @@ Ask unresolved items in small batches. Questions to ask only when not
 already known:
 
 - RTL state: found, external path, generated stub, none
-- bus protocol: APB or AHB
+- bus protocol: APB, AHB, or AXI4-Lite
+- bus direction (AXI4-Lite only): DUT is slave (default) or master
 - bus VIP source: generate fresh, reuse existing VIP
 - external VIP reuse level: import only, drive with VIP
 - reference model language: none, SV, C-DPI, Python-DPI
-- clock/reset: `pclk/presetn` or `hclk/hresetn` frequency, polarity, reset cycles
+- clock/reset: `pclk/presetn`, `hclk/hresetn`, or `aclk/aresetn` frequency, polarity, reset cycles
 - UVM version: default 1.2 unless user specifies otherwise
-- address width: `paddr_width` or `haddr_width`, default 12
+- address width: `paddr_width`, `haddr_width`, or `axi_addr_width`, default 12
 - endianness for multi-word arrays
 - coverage: enabled or skipped
 - required extra smoke tests
@@ -173,8 +181,10 @@ Key scaffold rules:
 - generate `top/<ip>_tb_top.sv`, `tb/<bus>_if.sv`, RAL, tests, audit
 
 For APB generation, load `references/apb.md`. For AHB generation, load
-`references/ahb.md`. For external VIP reuse, load
-`references/apb_external_vip.md` or `references/ahb_external_vip.md`.
+`references/ahb.md`. For AXI4-Lite generation, load
+`references/axi_lite.md`. For external VIP reuse, load
+`references/apb_external_vip.md`, `references/ahb_external_vip.md`, or
+`references/axi_lite_external_vip.md`.
 For top wiring, load
 `references/top_sv.md`. For Makefile, load
 `references/makefile_contract.md`. For `tb_api`, load
@@ -222,7 +232,11 @@ make all SV_CASE=<ip>_reg_access_test
 
 Sanity must include a positive bus check: read a register with known
 non-zero reset when possible; otherwise read register 0 and prove the
-DUT responds with `pready` before timeout.
+DUT responds (`pready` / `hready` / `rvalid`) before timeout. For
+AXI4-Lite with `bus_direction: master`, the mandatory test is instead
+`<ip>_responder_smoke_test`: the slave responder must observe at least
+one valid AW/W or AR handshake from the DUT within a timeout. RAL and
+`<ip>_reg_access_test` are not generated for the master direction.
 
 If a mandatory runtime test fails, re-enter Phase 5 with a runtime-fix
 sub-agent for up to 3 attempts. Save results to
@@ -279,6 +293,8 @@ Load only the relevant file for the current phase.
 | `references/apb_external_vip.md` | existing APB VIP reuse |
 | `references/ahb.md` | generated AHB-Lite agent |
 | `references/ahb_external_vip.md` | existing AHB VIP reuse |
+| `references/axi_lite.md` | generated AXI4-Lite agent (slave + master directions) |
+| `references/axi_lite_external_vip.md` | existing AXI4-Lite VIP reuse |
 | `references/spec_parsing.md` | parser rules |
 | `references/registers_yaml_schema.md` | normalized registers |
 | `references/ral_gen.md` | RAL generation |

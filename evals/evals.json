@@ -41,6 +41,59 @@
       ]
     },
     {
+      "id": 4,
+      "name": "axi-lite-simple-slave",
+      "fixture": "axi_lite_simple_slave",
+      "prompt": "I have a small AXI4-Lite slave peripheral with two registers (ID and SCRATCH). RTL is in rtl/, register table in spec/axi_lite_simple_slave_regs.xlsx. Generate a UVM tb with sanity and register access tests.",
+      "expected_output": "A UVM tb scaffold using the generated AXI4-Lite agent and RAL. Compile clean, sanity reads ID = 0x000000a5, reg_access runs.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",   "kind": "files_exist", "files_txt": "evals/fixtures/axi_lite_simple_slave/expected/files.txt"},
+        {"name": "compile_succeeds",         "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",      "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",            "kind": "sim_passes",     "test": "axi_lite_simple_slave_sanity_test"},
+        {"name": "sanity_reads_id",          "kind": "log_contains",   "test": "axi_lite_simple_slave_sanity_test", "needle": "= 0x000000a5"},
+        {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "axi_lite_simple_slave_reg_access_test"},
+        {"name": "random_seq_runs",          "kind": "sim_passes",     "test": "axi_lite_simple_slave_random_seq_test"},
+        {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "axi-lite-simple-master",
+      "fixture": "axi_lite_simple_master",
+      "prompt": "I have a tiny AXI4-Lite master that issues one write of 0xDEADBEEF to address 0x100 after reset. RTL is in rtl/. Generate a UVM tb that observes this transaction via a slave responder.",
+      "expected_output": "A UVM tb scaffold with the AXI4-Lite slave responder agent and a responder_smoke test that observes the DUT write. No RAL.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",     "kind": "files_exist", "files_txt": "evals/fixtures/axi_lite_simple_master/expected/files.txt"},
+        {"name": "compile_succeeds",           "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",        "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",              "kind": "sim_passes",     "test": "axi_lite_simple_master_sanity_test"},
+        {"name": "responder_smoke_passes",     "kind": "sim_passes",     "test": "axi_lite_simple_master_responder_smoke_test"},
+        {"name": "observed_dut_write",         "kind": "log_contains",   "test": "axi_lite_simple_master_responder_smoke_test", "needle": "@0x100 = 0xdeadbeef"},
+        {"name": "no_fixture_pollution",       "kind": "fixture_unchanged"}
+      ]
+    },
+    {
+      "id": 6,
+      "name": "axi-lite-slave-existing-vip",
+      "fixture": "axi_lite_simple_slave",
+      "intake_yaml": "intake_reuse.yaml",
+      "prompt": "I already have an AXI4-Lite VIP under vip/user_axi_lite_vip. Import that VIP instead of generating a new AXI4-Lite agent, then scaffold the testbench.",
+      "expected_output": "A UVM tb scaffold that reuses the user AXI4-Lite VIP via tb/external_vip.f, skips fresh agent generation, and still passes sanity plus register access tests on tb_api.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present",   "kind": "files_exist", "files_txt": "evals/fixtures/axi_lite_simple_slave/expected/files_reuse.txt"},
+        {"name": "compile_succeeds",         "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",      "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory"]},
+        {"name": "sanity_passes",            "kind": "sim_passes",     "test": "axi_lite_simple_slave_sanity_test"},
+        {"name": "sanity_reads_id",          "kind": "log_contains",   "test": "axi_lite_simple_slave_sanity_test", "needle": "= 0x000000a5"},
+        {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "axi_lite_simple_slave_reg_access_test"},
+        {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
+      ]
+    },
+    {
       "id": 3,
       "name": "uart16550-existing-apb-vip",
       "fixture": "uart16550",

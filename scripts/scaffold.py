@@ -90,17 +90,26 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+_WIDTH_KEY = {"apb": "paddr_width", "ahb": "haddr_width", "axi_lite": "axi_addr_width"}
+
+
 def _validate_intake(intake: dict) -> None:
     required = ["ip_name", "bus_protocol", "ref_model_language", "uvm_version"]
     missing = [k for k in required if k not in intake]
     if missing:
         sys.exit(f"FATAL: intake.yaml missing keys: {missing}")
     bus = intake["bus_protocol"]
-    if bus not in ("apb", "ahb"):
-        sys.exit(f"FATAL: supported bus_protocol values are apb, ahb (got {bus!r})")
-    width_key = "paddr_width" if bus == "apb" else "haddr_width"
+    if bus not in ("apb", "ahb", "axi_lite"):
+        sys.exit(f"FATAL: supported bus_protocol values are apb, ahb, axi_lite (got {bus!r})")
+    width_key = _WIDTH_KEY[bus]
     if width_key not in intake:
         sys.exit(f"FATAL: intake.yaml missing key for {bus}: {width_key}")
+    if bus == "axi_lite":
+        direction = intake.get("bus_direction", "slave")
+        if direction not in ("slave", "master"):
+            sys.exit(f"FATAL: unsupported bus_direction: {direction!r}")
+    elif "bus_direction" in intake and intake["bus_direction"] != "slave":
+        sys.exit(f"FATAL: bus_direction is only meaningful for axi_lite")
     vip_source = intake.get(f"{bus}_vip_source", "generate_fresh")
     if vip_source not in ("generate_fresh", "reuse_my_vip"):
         sys.exit(f"FATAL: unsupported {bus}_vip_source: {vip_source!r}")
@@ -274,12 +283,29 @@ def _bus(intake: dict) -> str:
 
 
 def _addr_width_key(bus: str) -> str:
-    return "paddr_width" if bus == "apb" else "haddr_width"
+    return _WIDTH_KEY[bus]
 
 
 def _addr_width(intake: dict) -> int:
     bus = _bus(intake)
     return int(intake.get(_addr_width_key(bus), 12))
+
+
+def _direction(intake: dict) -> str:
+    return intake.get("bus_direction", "slave")
+
+
+def _clk_rst_names(bus: str) -> tuple[str, str]:
+    if bus == "apb":
+        return "pclk", "presetn"
+    if bus == "ahb":
+        return "hclk", "hresetn"
+    return "aclk", "aresetn"
+
+
+def _bus_has_ral(intake: dict) -> bool:
+    """RAL+reg_access_test only generated when the DUT is a slave."""
+    return _direction(intake) == "slave"
 
 
 def _vip_source(intake: dict) -> str:
@@ -434,30 +460,32 @@ def emit_makefile(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
     )
 
 
-def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str) -> str:
+def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str, has_ral: bool = True) -> str:
     tb_root = "$PROJ_DIR/tb"
     test_root = "$PROJ_DIR/test"
     top_root = "$PROJ_DIR/top"
-    if_name = "apb_if.sv" if bus == "apb" else "ahb_if.sv"
-    agt_dir = "apb_agt_top" if bus == "apb" else "ahb_agt_top"
-    agent_file = "apb_agent.sv" if bus == "apb" else "ahb_agent.sv"
-    adapter_file = f"{ip}_apb_adapter.sv" if bus == "apb" else f"{ip}_ahb_adapter.sv"
+    if_name = {"apb": "apb_if.sv", "ahb": "ahb_if.sv", "axi_lite": "axi_lite_if.sv"}[bus]
+    agt_dir = f"{bus}_agt_top"
+    agent_file = f"{bus}_agent.sv"
+    adapter_file = f"{ip}_{bus}_adapter.sv"
     lines = [
         f"+incdir+{tb_root}",
         f"+incdir+{tb_root}/tb_api",
-        f"+incdir+{tb_root}/ral",
         f"+incdir+{test_root}",
         f"+incdir+{top_root}",
         f"{tb_root}/{if_name}",
         f"{tb_root}/tb_api/tb_api_pkg.sv",
-        f"{tb_root}/ral/{ip}_reg_block.sv",
     ]
+    if has_ral:
+        lines.insert(2, f"+incdir+{tb_root}/ral")
+        lines.append(f"{tb_root}/ral/{ip}_reg_block.sv")
     if vip_source == "generate_fresh":
         lines.insert(1, f"+incdir+{tb_root}/{agt_dir}")
-        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"{tb_root}/{agt_dir}/{agent_file}")
-        lines.append(f"{tb_root}/ral/{adapter_file}")
+        lines.append(f"{tb_root}/{agt_dir}/{agent_file}")
+        if has_ral:
+            lines.append(f"{tb_root}/ral/{adapter_file}")
     else:
-        lines.insert(lines.index(f"{tb_root}/ral/{ip}_reg_block.sv"), f"-f {tb_root}/external_vip.f")
+        lines.append(f"-f {tb_root}/external_vip.f")
     if has_dpi:
         lines.append(f"+incdir+{tb_root}/dpi")
         lines.append(f"{tb_root}/dpi/{ip}_ref_pkg.sv")
@@ -511,13 +539,45 @@ def emit_ahb_if() -> str:
         """)
 
 
+def emit_axi_lite_if() -> str:
+    return textwrap.dedent("""\
+        `ifndef AXI_LITE_IF_SV
+        `define AXI_LITE_IF_SV
+        interface axi_lite_if #(int ADDR_W = 12, int DATA_W = 32) (
+            input logic aclk,
+            input logic aresetn
+        );
+            localparam int STRB_W = DATA_W / 8;
+            logic              awvalid;
+            logic              awready;
+            logic [ADDR_W-1:0] awaddr;
+            logic [2:0]        awprot;
+            logic              wvalid;
+            logic              wready;
+            logic [DATA_W-1:0] wdata;
+            logic [STRB_W-1:0] wstrb;
+            logic              bvalid;
+            logic              bready;
+            logic [1:0]        bresp;
+            logic              arvalid;
+            logic              arready;
+            logic [ADDR_W-1:0] araddr;
+            logic [2:0]        arprot;
+            logic              rvalid;
+            logic              rready;
+            logic [DATA_W-1:0] rdata;
+            logic [1:0]        rresp;
+        endinterface
+        `endif
+        """)
+
+
 def emit_tb_top(intake: dict, rtl: dict) -> str:
     ip = intake["ip_name"]
     bus = _bus(intake)
     top = rtl["top_module"]["name"]
     addr_w = _addr_width(intake)
-    clk_name = "pclk" if bus == "apb" else "hclk"
-    rst_name = "presetn" if bus == "apb" else "hresetn"
+    clk_name, rst_name = _clk_rst_names(bus)
     rst_cycles = intake.get("reset", {}).get(f"{rst_name}_duration_cycles", 16)
     half_period = intake.get("clock", {}).get(f"{clk_name}_period_ns", 10) // 2
 
@@ -550,7 +610,7 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
             tb_api::set_vif(apb);""").rstrip()
-    else:
+    elif bus == "ahb":
         bus_inst = f"ahb_if #(.ADDR_W({addr_w}), .DATA_W(32)) ahb (.hclk(hclk), .hresetn(hresetn));"
         dut_bus = textwrap.dedent("""\
             .hclk    (hclk),        .hresetn(hresetn),
@@ -563,6 +623,23 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "ahb_vif", ahb);
             tb_api::set_vif(ahb);""").rstrip()
+    else:  # axi_lite
+        bus_inst = f"axi_lite_if #(.ADDR_W({addr_w}), .DATA_W(32)) axi (.aclk(aclk), .aresetn(aresetn));"
+        dut_bus = textwrap.dedent("""\
+            .aclk    (aclk),       .aresetn(aresetn),
+            .awvalid (axi.awvalid), .awready(axi.awready),
+            .awaddr  (axi.awaddr),  .awprot (axi.awprot),
+            .wvalid  (axi.wvalid),  .wready (axi.wready),
+            .wdata   (axi.wdata),   .wstrb  (axi.wstrb),
+            .bvalid  (axi.bvalid),  .bready (axi.bready),
+            .bresp   (axi.bresp),
+            .arvalid (axi.arvalid), .arready(axi.arready),
+            .araddr  (axi.araddr),  .arprot (axi.arprot),
+            .rvalid  (axi.rvalid),  .rready (axi.rready),
+            .rdata   (axi.rdata),   .rresp  (axi.rresp)""").rstrip()
+        config = textwrap.dedent("""\
+            uvm_config_db#(tb_api::vif_t)::set(null, "*", "axi_lite_vif", axi);
+            tb_api::set_vif(axi);""").rstrip()
 
     dut_bus_block = textwrap.indent(dut_bus, "        ")
     config_block = textwrap.indent(config, "        ")
@@ -608,7 +685,7 @@ endmodule
 
 
 def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
-    if_type = "apb_if" if bus == "apb" else "ahb_if"
+    if_type = {"apb": "apb_if", "ahb": "ahb_if", "axi_lite": "axi_lite_if"}[bus]
     return textwrap.dedent(f"""\
         `ifndef TB_API_PKG_SV
         `define TB_API_PKG_SV
@@ -626,7 +703,9 @@ def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
         """)
 
 
-def emit_tb_api_primitives(bus: str) -> str:
+def emit_tb_api_primitives(bus: str, direction: str = "slave") -> str:
+    if bus == "axi_lite":
+        return _emit_axi_lite_tb_api_primitives(direction)
     if bus == "ahb":
         return textwrap.dedent("""\
             // ====================================================================
@@ -776,6 +855,210 @@ def emit_tb_api_primitives(bus: str) -> str:
         `endif
             data = vif.prdata;
             vif.psel <= 1'b0; vif.penable <= 1'b0;
+        endtask
+
+        task automatic write_array(input logic [ADDR_W-1:0] base,
+                                    input int                stride,
+                                    input logic [DATA_W-1:0] data[]);
+            int i;
+            for (i = 0; i < data.size(); i++) write(base + i*stride, data[i]);
+        endtask
+
+        task automatic read_array(input  logic [ADDR_W-1:0] base,
+                                   input  int                stride,
+                                   input  int                count,
+                                   output logic [DATA_W-1:0] data[]);
+            int i;
+            data = new[count];
+            for (i = 0; i < count; i++) read(base + i*stride, data[i]);
+        endtask
+
+        task automatic expect_reg(input logic [ADDR_W-1:0] addr,
+                                   input logic [DATA_W-1:0] expected,
+                                   input string             tag = "EXPECT");
+            logic [DATA_W-1:0] got;
+            read(addr, got);
+            if (got !== expected)
+                `uvm_error(tag, $sformatf("@0x%0h got=0x%08h expected=0x%08h",
+                                          addr, got, expected))
+            else
+                `uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, got), UVM_LOW)
+        endtask
+
+        task automatic wait_status_flag(
+                input logic [ADDR_W-1:0] status_addr,
+                input int                bit_idx,
+                input bit                expected = 1'b1,
+                input bit                wait_low_first = 1'b0,
+                input int                timeout_polls = 1000,
+                input string             tag = "WAIT");
+            int  n;
+            logic [DATA_W-1:0] rdata;
+            if (wait_low_first) begin
+                n = timeout_polls;
+                do begin
+                    read(status_addr, rdata);
+                    if (rdata[bit_idx] !== expected) break;
+                    if (--n == 0) `uvm_fatal(tag, "timeout waiting for status bit to drop")
+                end while (1);
+            end
+            n = timeout_polls;
+            do begin
+                read(status_addr, rdata);
+                if (rdata[bit_idx] === expected) return;
+                if (--n == 0) `uvm_fatal(tag, $sformatf("timeout waiting for bit %0d == %0d", bit_idx, expected))
+            end while (1);
+        endtask
+        """)
+
+
+def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
+    if direction == "master":
+        # DUT is master; tb_api drives the slave responder helpers.
+        return textwrap.dedent("""\
+            // ====================================================================
+            // tb_api primitives — AXI4-Lite responder helpers (DUT is master).
+            // The responder agent owns the live bus handshakes; these helpers
+            // expose its memory and observed-transaction signals.
+            // ====================================================================
+
+            function automatic void _require_vif();
+                if (vif == null) `uvm_fatal("TB_API",
+                    "vif not set — call tb_api::set_vif(...) in top initial block")
+            endfunction
+
+            // Backing memory; shared between the responder and these helpers.
+            logic [DATA_W-1:0] _mem [logic [ADDR_W-1:0]];
+
+            // Observed-transaction counters; bumped by the responder.
+            int unsigned writes_observed = 0;
+            int unsigned reads_observed  = 0;
+            logic [ADDR_W-1:0] last_write_addr;
+            logic [DATA_W-1:0] last_write_data;
+            logic [ADDR_W-1:0] last_read_addr;
+
+            function automatic void seed_mem(input logic [ADDR_W-1:0] addr,
+                                              input logic [DATA_W-1:0] data);
+                _mem[addr] = data;
+            endfunction
+
+            function automatic logic [DATA_W-1:0] peek_mem(input logic [ADDR_W-1:0] addr);
+                if (_mem.exists(addr)) return _mem[addr];
+                return '0;
+            endfunction
+
+            function automatic void clear_observed();
+                writes_observed = 0;
+                reads_observed  = 0;
+            endfunction
+
+            // Block until at least one write/read has been observed. If one
+            // has already happened before the call, return immediately. Use
+            // clear_observed() before a fresh wait window.
+            task automatic wait_for_write(input int unsigned timeout_cycles = 1000);
+                int unsigned n = timeout_cycles;
+                _require_vif();
+                while (writes_observed == 0) begin
+                    @(posedge vif.aclk);
+                    if (--n == 0) `uvm_fatal("TB_API",
+                        "timeout waiting for DUT-initiated write")
+                end
+            endtask
+
+            task automatic wait_for_read(input int unsigned timeout_cycles = 1000);
+                int unsigned n = timeout_cycles;
+                _require_vif();
+                while (reads_observed == 0) begin
+                    @(posedge vif.aclk);
+                    if (--n == 0) `uvm_fatal("TB_API",
+                        "timeout waiting for DUT-initiated read")
+                end
+            endtask
+
+            task automatic expect_observed_write(input logic [ADDR_W-1:0] addr,
+                                                  input logic [DATA_W-1:0] data,
+                                                  input string             tag = "EXPECT_WR");
+                if (writes_observed == 0)
+                    `uvm_error(tag, "no writes observed yet")
+                else if (last_write_addr !== addr || last_write_data !== data)
+                    `uvm_error(tag, $sformatf(
+                        "last observed write @0x%0h=0x%08h, expected @0x%0h=0x%08h",
+                        last_write_addr, last_write_data, addr, data))
+                else
+                    `uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, data), UVM_LOW)
+            endtask
+            """)
+
+    # DUT-as-slave: TB master BFM (AXI4-Lite write/read primitives).
+    return textwrap.dedent("""\
+        // ====================================================================
+        // tb_api primitives — AXI4-Lite single-beat master + helpers.
+        // ====================================================================
+
+        function automatic void _require_vif();
+            if (vif == null) `uvm_fatal("TB_API",
+                "vif not set — call tb_api::set_vif(...) in top initial block")
+        endfunction
+
+        task automatic _idle();
+            vif.awvalid <= 1'b0;
+            vif.wvalid  <= 1'b0;
+            vif.bready  <= 1'b0;
+            vif.arvalid <= 1'b0;
+            vif.rready  <= 1'b0;
+        endtask
+
+        task automatic write(input logic [ADDR_W-1:0] addr,
+                             input logic [DATA_W-1:0] data);
+            _require_vif();
+            @(posedge vif.aclk);
+            vif.awvalid <= 1'b1;
+            vif.awaddr  <= addr;
+            vif.awprot  <= 3'b000;
+            vif.wvalid  <= 1'b1;
+            vif.wdata   <= data;
+            vif.wstrb   <= '1;
+            vif.bready  <= 1'b1;
+            // Detect each handshake on the edge where both valid & ready are
+            // high in the same cycle. Sample BEFORE the NBA region by using
+            // `@(posedge clk iff ...)` so we don't race with our own drives.
+            fork
+                begin
+                    @(posedge vif.aclk iff (vif.awvalid && vif.awready));
+                    vif.awvalid <= 1'b0;
+                end
+                begin
+                    @(posedge vif.aclk iff (vif.wvalid && vif.wready));
+                    vif.wvalid <= 1'b0;
+                end
+                begin
+                    @(posedge vif.aclk iff (vif.bvalid && vif.bready));
+                end
+            join
+            vif.bready <= 1'b0;
+            _idle();
+        endtask
+
+        task automatic read(input  logic [ADDR_W-1:0] addr,
+                            output logic [DATA_W-1:0] data);
+            _require_vif();
+            @(posedge vif.aclk);
+            vif.arvalid <= 1'b1;
+            vif.araddr  <= addr;
+            vif.arprot  <= 3'b000;
+            vif.rready  <= 1'b1;
+            fork
+                begin
+                    @(posedge vif.aclk iff (vif.arvalid && vif.arready));
+                    vif.arvalid <= 1'b0;
+                end
+                begin
+                    @(posedge vif.aclk iff (vif.rvalid && vif.rready));
+                    data = vif.rdata;
+                end
+            join
+            vif.rready <= 1'b0;
+            _idle();
         endtask
 
         task automatic write_array(input logic [ADDR_W-1:0] base,
@@ -1204,6 +1487,321 @@ def emit_ahb_sequence() -> str:
                     start_item(tr);
                     if (!tr.randomize() with { write == 1'b0; })
                         `uvm_fatal("RAND", "ahb_trans randomize failed")
+                    if (legal_addrs.size() != 0)
+                        tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
+                    finish_item(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_axi_lite_agent_pkg(direction: str) -> str:
+    driver_role = "// slave responder (DUT is master)" if direction == "master" else "// master BFM (DUT is slave)"
+    return textwrap.dedent(f"""\
+        `ifndef AXI_LITE_AGENT_SV
+        `define AXI_LITE_AGENT_SV
+        package axi_lite_agt_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            `include "uvm_macros.svh"
+
+            `include "axi_lite_agt_config.sv"
+            `include "axi_lite_trans.sv"
+            `include "axi_lite_sequencer.sv"
+            `include "axi_lite_driver.sv"   {driver_role}
+            `include "axi_lite_monitor.sv"
+            `include "axi_lite_sequence.sv"
+
+            class axi_lite_agent extends uvm_agent;
+                `uvm_component_utils(axi_lite_agent)
+                axi_lite_driver     drv;
+                axi_lite_monitor    mon;
+                axi_lite_sequencer  sqr;
+                axi_lite_agt_config cfg;
+
+                function new(string name, uvm_component parent = null);
+                    super.new(name, parent);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    if (!uvm_config_db#(axi_lite_agt_config)::get(this, "", "cfg", cfg))
+                        `uvm_fatal("CFG", "axi_lite_agt_config missing")
+                    if (cfg.vif != null)
+                        uvm_config_db#(vif_t)::set(this, "*", "axi_lite_vif", cfg.vif);
+                    mon = axi_lite_monitor::type_id::create("mon", this);
+                    if (cfg.is_active == UVM_ACTIVE) begin
+                        drv = axi_lite_driver::type_id::create("drv", this);
+                        sqr = axi_lite_sequencer::type_id::create("sqr", this);
+                    end
+                endfunction
+
+                function void connect_phase(uvm_phase phase);
+                    super.connect_phase(phase);
+                    if (cfg.is_active == UVM_ACTIVE)
+                        drv.seq_item_port.connect(sqr.seq_item_export);
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
+def emit_axi_lite_agt_config() -> str:
+    return textwrap.dedent("""\
+        class axi_lite_agt_config extends uvm_object;
+            `uvm_object_utils(axi_lite_agt_config)
+            uvm_active_passive_enum is_active = UVM_ACTIVE;
+            vif_t vif;
+
+            function new(string name = "axi_lite_agt_config");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_axi_lite_trans() -> str:
+    return textwrap.dedent("""\
+        class axi_lite_trans extends uvm_sequence_item;
+            rand logic [ADDR_W-1:0] addr;
+            rand logic [DATA_W-1:0] data;
+            rand bit                write;
+            logic [DATA_W-1:0]      rdata;
+            logic [1:0]             resp;
+
+            `uvm_object_utils_begin(axi_lite_trans)
+                `uvm_field_int(addr,  UVM_ALL_ON)
+                `uvm_field_int(data,  UVM_ALL_ON)
+                `uvm_field_int(write, UVM_ALL_ON)
+                `uvm_field_int(rdata, UVM_ALL_ON | UVM_NOCOMPARE)
+                `uvm_field_int(resp,  UVM_ALL_ON | UVM_NOCOMPARE)
+            `uvm_object_utils_end
+
+            function new(string name = "axi_lite_trans");
+                super.new(name);
+            endfunction
+        endclass
+        """)
+
+
+def emit_axi_lite_sequencer() -> str:
+    return textwrap.dedent("""\
+        typedef uvm_sequencer #(axi_lite_trans) axi_lite_sequencer;
+        """)
+
+
+def emit_axi_lite_driver(direction: str) -> str:
+    if direction == "master":
+        # Slave responder. Listens to vif and responds; updates tb_api shared state.
+        return textwrap.dedent("""\
+            class axi_lite_driver extends uvm_driver #(axi_lite_trans);
+                `uvm_component_utils(axi_lite_driver)
+                vif_t vif;
+
+                function new(string name, uvm_component parent = null);
+                    super.new(name, parent);
+                endfunction
+
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    if (!uvm_config_db#(vif_t)::get(this, "", "axi_lite_vif", vif))
+                        `uvm_fatal("CFG", "axi_lite_vif missing")
+                    tb_api::set_vif(vif);
+                endfunction
+
+                task run_phase(uvm_phase phase);
+                    fork
+                        drive_idle();
+                        respond_write();
+                        respond_read();
+                    join
+                endtask
+
+                task drive_idle();
+                    @(posedge vif.aclk);
+                    vif.awready <= 1'b0;
+                    vif.wready  <= 1'b0;
+                    vif.bvalid  <= 1'b0;
+                    vif.bresp   <= 2'b00;
+                    vif.arready <= 1'b0;
+                    vif.rvalid  <= 1'b0;
+                    vif.rdata   <= '0;
+                    vif.rresp   <= 2'b00;
+                endtask
+
+                task respond_write();
+                    logic [ADDR_W-1:0] aw_addr;
+                    logic [DATA_W-1:0] w_data;
+                    bit aw_done, w_done;
+                    forever begin
+                        @(posedge vif.aclk);
+                        if (vif.aresetn !== 1'b1) continue;
+                        aw_done = 0; w_done = 0;
+                        vif.awready <= 1'b1;
+                        vif.wready  <= 1'b1;
+                        while (!(aw_done && w_done)) begin
+                            @(posedge vif.aclk);
+                            if (!aw_done && vif.awvalid === 1'b1) begin
+                                aw_addr = vif.awaddr;
+                                aw_done = 1;
+                                vif.awready <= 1'b0;
+                            end
+                            if (!w_done && vif.wvalid === 1'b1) begin
+                                w_data = vif.wdata;
+                                w_done = 1;
+                                vif.wready <= 1'b0;
+                            end
+                        end
+                        tb_api::_mem[aw_addr] = w_data;
+                        tb_api::last_write_addr = aw_addr;
+                        tb_api::last_write_data = w_data;
+                        tb_api::writes_observed = tb_api::writes_observed + 1;
+                        vif.bvalid <= 1'b1;
+                        vif.bresp  <= 2'b00;
+                        do @(posedge vif.aclk); while (vif.bready !== 1'b1);
+                        vif.bvalid <= 1'b0;
+                    end
+                endtask
+
+                task respond_read();
+                    logic [ADDR_W-1:0] ar_addr;
+                    logic [DATA_W-1:0] rd;
+                    forever begin
+                        @(posedge vif.aclk);
+                        if (vif.aresetn !== 1'b1) continue;
+                        vif.arready <= 1'b1;
+                        do @(posedge vif.aclk); while (vif.arvalid !== 1'b1);
+                        ar_addr = vif.araddr;
+                        vif.arready <= 1'b0;
+                        rd = tb_api::_mem.exists(ar_addr) ? tb_api::_mem[ar_addr] : '0;
+                        tb_api::last_read_addr = ar_addr;
+                        tb_api::reads_observed = tb_api::reads_observed + 1;
+                        vif.rdata  <= rd;
+                        vif.rresp  <= 2'b00;
+                        vif.rvalid <= 1'b1;
+                        do @(posedge vif.aclk); while (vif.rready !== 1'b1);
+                        vif.rvalid <= 1'b0;
+                    end
+                endtask
+            endclass
+            """)
+    # Master BFM (DUT is slave). Same shape as APB/AHB driver: calls tb_api primitives.
+    return textwrap.dedent("""\
+        class axi_lite_driver extends uvm_driver #(axi_lite_trans);
+            `uvm_component_utils(axi_lite_driver)
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "axi_lite_vif", vif))
+                    `uvm_fatal("CFG", "axi_lite_vif missing")
+                tb_api::set_vif(vif);
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                axi_lite_trans tr;
+                forever begin
+                    seq_item_port.get_next_item(tr);
+                    if (tr.write)
+                        tb_api::write(tr.addr, tr.data);
+                    else
+                        tb_api::read(tr.addr, tr.rdata);
+                    tr.resp = vif.bvalid ? vif.bresp : vif.rresp;
+                    seq_item_port.item_done();
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_axi_lite_monitor(direction: str) -> str:
+    # Both directions observe completed handshakes on AW/W (write) and AR/R (read).
+    return textwrap.dedent("""\
+        class axi_lite_monitor extends uvm_monitor;
+            `uvm_component_utils(axi_lite_monitor)
+            uvm_analysis_port #(axi_lite_trans) ap;
+            vif_t vif;
+
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+                ap = new("ap", this);
+            endfunction
+
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "axi_lite_vif", vif))
+                    `uvm_fatal("CFG", "axi_lite_vif missing")
+            endfunction
+
+            task run_phase(uvm_phase phase);
+                fork
+                    observe_write();
+                    observe_read();
+                join
+            endtask
+
+            task observe_write();
+                axi_lite_trans tr;
+                logic [ADDR_W-1:0] aw_addr;
+                logic [DATA_W-1:0] w_data;
+                forever begin
+                    @(posedge vif.aclk iff (vif.awvalid & vif.awready));
+                    aw_addr = vif.awaddr;
+                    @(posedge vif.aclk iff (vif.wvalid & vif.wready));
+                    w_data = vif.wdata;
+                    @(posedge vif.aclk iff (vif.bvalid & vif.bready));
+                    tr = axi_lite_trans::type_id::create("tr");
+                    tr.write = 1;
+                    tr.addr  = aw_addr;
+                    tr.data  = w_data;
+                    tr.resp  = vif.bresp;
+                    ap.write(tr);
+                end
+            endtask
+
+            task observe_read();
+                axi_lite_trans tr;
+                logic [ADDR_W-1:0] ar_addr;
+                forever begin
+                    @(posedge vif.aclk iff (vif.arvalid & vif.arready));
+                    ar_addr = vif.araddr;
+                    @(posedge vif.aclk iff (vif.rvalid & vif.rready));
+                    tr = axi_lite_trans::type_id::create("tr");
+                    tr.write = 0;
+                    tr.addr  = ar_addr;
+                    tr.rdata = vif.rdata;
+                    tr.resp  = vif.rresp;
+                    ap.write(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def emit_axi_lite_sequence() -> str:
+    return textwrap.dedent("""\
+        class axi_lite_sequence extends uvm_sequence #(axi_lite_trans);
+            `uvm_object_utils(axi_lite_sequence)
+            int unsigned n_transactions = 1;
+            logic [ADDR_W-1:0] legal_addrs[$];
+
+            function new(string name = "axi_lite_sequence");
+                super.new(name);
+            endfunction
+
+            task body();
+                axi_lite_trans tr;
+                repeat (n_transactions) begin
+                    tr = axi_lite_trans::type_id::create("tr");
+                    start_item(tr);
+                    if (!tr.randomize() with { write == 1'b0; })
+                        `uvm_fatal("RAND", "axi_lite_trans randomize failed")
                     if (legal_addrs.size() != 0)
                         tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
                     finish_item(tr);
@@ -1642,6 +2240,51 @@ def emit_ahb_adapter(ip: str) -> str:
         """)
 
 
+def emit_axi_lite_adapter(ip: str) -> str:
+    return textwrap.dedent(f"""\
+        `ifndef {ip.upper()}_AXI_LITE_ADAPTER_SV
+        `define {ip.upper()}_AXI_LITE_ADAPTER_SV
+        package {ip}_axi_lite_adapter_pkg;
+            import uvm_pkg::*;
+            import tb_api::*;
+            import axi_lite_agt_pkg::*;
+            `include "uvm_macros.svh"
+
+            class {ip}_axi_lite_adapter extends uvm_reg_adapter;
+                `uvm_object_utils({ip}_axi_lite_adapter)
+
+                function new(string name = "{ip}_axi_lite_adapter");
+                    super.new(name);
+                    supports_byte_enable = 0;
+                    provides_responses   = 0;
+                endfunction
+
+                virtual function uvm_sequence_item reg2bus(const ref uvm_reg_bus_op rw);
+                    axi_lite_trans t = axi_lite_trans::type_id::create("t");
+                    t.addr  = rw.addr[ADDR_W-1:0];
+                    t.data  = rw.data[DATA_W-1:0];
+                    t.write = (rw.kind == UVM_WRITE);
+                    return t;
+                endfunction
+
+                virtual function void bus2reg(uvm_sequence_item bus_item, ref uvm_reg_bus_op rw);
+                    axi_lite_trans t;
+                    if (!$cast(t, bus_item)) begin
+                        `uvm_error("RAL_ADAPTER", "bus_item is not axi_lite_trans")
+                        rw.status = UVM_NOT_OK;
+                        return;
+                    end
+                    rw.kind   = t.write ? UVM_WRITE : UVM_READ;
+                    rw.addr   = t.addr;
+                    rw.data   = t.write ? t.data : t.rdata;
+                    rw.status = (t.resp != 2'b00) ? UVM_NOT_OK : UVM_IS_OK;
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
 def emit_dpi_ref_pkg(ip: str, dpi: dict) -> str:
     sv_imports = []
     for f in dpi["dpi_exports"]:
@@ -1704,51 +2347,82 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
     ip = intake["ip_name"]
     bus = _bus(intake)
     addr_w = _addr_width(intake)
-    sanity_addr, sanity_value = _pick_sanity_target(regs)
-    clk = "pclk" if bus == "apb" else "hclk"
-    rst = "presetn" if bus == "apb" else "hresetn"
+    direction = _direction(intake)
+    has_ral = _bus_has_ral(intake)
+    sanity_addr, sanity_value = _pick_sanity_target(regs) if has_ral else (0, 0)
+    clk, rst = _clk_rst_names(bus)
     agent_cls = f"{bus}_agent"
     cfg_cls = f"{bus}_agt_config"
     seq_cls = f"{bus}_sequence"
     adapter_cls = f"{ip}_{bus}_adapter"
 
-    addr_consts = []
-    for r in regs:
-        off = r["offset"] if isinstance(r["offset"], int) else int(r["offset"], 16)
-        addr_consts.append(
-            f"    localparam logic [{addr_w-1}:0] ADDR_{r['name']} = {addr_w}'h{off:03X};"
+    if has_ral:
+        addr_consts = []
+        for r in regs:
+            off = r["offset"] if isinstance(r["offset"], int) else int(r["offset"], 16)
+            addr_consts.append(
+                f"    localparam logic [{addr_w-1}:0] ADDR_{r['name']} = {addr_w}'h{off:03X};"
+            )
+        addr_consts_str = "\n".join(addr_consts)
+
+        readable_regs = regs[:8]
+        reg_reads = "\n".join(
+            f'                tb_api::read(ADDR_{r["name"]}, rd); '
+            f'`uvm_info(tag, $sformatf("{r["name"]} = 0x%08h", rd), UVM_LOW)'
+            for r in readable_regs
         )
-    addr_consts_str = "\n".join(addr_consts)
+        legal_addr_list = ", ".join(f"ADDR_{r['name']}" for r in readable_regs)
 
-    readable_regs = regs[:8]
-    reg_reads = "\n".join(
-        f'                tb_api::read(ADDR_{r["name"]}, rd); '
-        f'`uvm_info(tag, $sformatf("{r["name"]} = 0x%08h", rd), UVM_LOW)'
-        for r in readable_regs
-    )
-    legal_addr_list = ", ".join(f"ADDR_{r['name']}" for r in readable_regs)
-
-    helper_tasks = textwrap.dedent(f"""\
-        task automatic run_reg_access_reads(input string tag);
-            logic [tb_api::DATA_W-1:0] rd;
-            `uvm_info(tag, "reading all registers", UVM_LOW)
+        helper_tasks = textwrap.dedent(f"""\
+            task automatic run_reg_access_reads(input string tag);
+                logic [tb_api::DATA_W-1:0] rd;
+                `uvm_info(tag, "reading all registers", UVM_LOW)
 {reg_reads}
-        endtask
-        """)
-
-    sanity_test = textwrap.dedent(f"""\
-        class {ip}_sanity_test extends uvm_test;
-            `uvm_component_utils({ip}_sanity_test)
-            function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
-            task run_phase(uvm_phase phase);
-                phase.raise_objection(this);
-                wait (tb_api::vif.{rst} === 1'b1);
-                repeat (4) @(posedge tb_api::vif.{clk});
-                tb_api::expect_reg({addr_w}'h{sanity_addr:03X}, 32'h{sanity_value:08X}, "SANITY");
-                phase.drop_objection(this);
             endtask
-        endclass
-        """)
+            """)
+    else:
+        addr_consts_str = ""
+        legal_addr_list = ""
+        helper_tasks = ""
+
+    if direction == "master":
+        sanity_test = textwrap.dedent(f"""\
+            class {ip}_sanity_test extends uvm_test;
+                `uvm_component_utils({ip}_sanity_test)
+                {agent_cls}      agent;
+                {cfg_cls} cfg;
+                function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    cfg = {cfg_cls}::type_id::create("cfg");
+                    cfg.vif = tb_api::vif;
+                    uvm_config_db#({cfg_cls})::set(this, "agent", "cfg", cfg);
+                    agent = {agent_cls}::type_id::create("agent", this);
+                endfunction
+                task run_phase(uvm_phase phase);
+                    phase.raise_objection(this);
+                    wait (tb_api::vif.{rst} === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.{clk});
+                    `uvm_info("SANITY", "responder is alive; idling 32 cycles", UVM_LOW)
+                    repeat (32) @(posedge tb_api::vif.{clk});
+                    phase.drop_objection(this);
+                endtask
+            endclass
+            """)
+    else:
+        sanity_test = textwrap.dedent(f"""\
+            class {ip}_sanity_test extends uvm_test;
+                `uvm_component_utils({ip}_sanity_test)
+                function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
+                task run_phase(uvm_phase phase);
+                    phase.raise_objection(this);
+                    wait (tb_api::vif.{rst} === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.{clk});
+                    tb_api::expect_reg({addr_w}'h{sanity_addr:03X}, 32'h{sanity_value:08X}, "SANITY");
+                    phase.drop_objection(this);
+                endtask
+            endclass
+            """)
 
     random_seq_test = textwrap.dedent(f"""\
         class {ip}_random_seq_test extends uvm_test;
@@ -1790,10 +2464,41 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
 
     vip_source = _vip_source(intake)
     agent_import = f"    import {bus}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
-    ral_import = f"    import {ip}_ral_pkg::*;"
-    adapter_import = f"    import {ip}_{bus}_adapter_pkg::*;" if vip_source == "generate_fresh" else ""
-    random_seq_body = random_seq_test if vip_source == "generate_fresh" else ""
-    if vip_source == "generate_fresh":
+    ral_import = f"    import {ip}_ral_pkg::*;" if has_ral else ""
+    adapter_import = (
+        f"    import {ip}_{bus}_adapter_pkg::*;"
+        if vip_source == "generate_fresh" and has_ral
+        else ""
+    )
+    random_seq_body = random_seq_test if (vip_source == "generate_fresh" and has_ral) else ""
+    if not has_ral:
+        # DUT-as-master: emit responder_smoke_test instead of reg_access_test.
+        reg_access_test = textwrap.dedent(f"""\
+            class {ip}_responder_smoke_test extends uvm_test;
+                `uvm_component_utils({ip}_responder_smoke_test)
+                {agent_cls}      agent;
+                {cfg_cls} cfg;
+                function new(string n="{ip}_responder_smoke_test", uvm_component p=null); super.new(n,p); endfunction
+                function void build_phase(uvm_phase phase);
+                    super.build_phase(phase);
+                    cfg = {cfg_cls}::type_id::create("cfg");
+                    cfg.vif = tb_api::vif;
+                    uvm_config_db#({cfg_cls})::set(this, "agent", "cfg", cfg);
+                    agent = {agent_cls}::type_id::create("agent", this);
+                endfunction
+                task run_phase(uvm_phase phase);
+                    phase.raise_objection(this);
+                    wait (tb_api::vif.{rst} === 1'b1);
+                    repeat (4) @(posedge tb_api::vif.{clk});
+                    `uvm_info("RESPONDER", "waiting for DUT-initiated write", UVM_LOW)
+                    tb_api::wait_for_write(2000);
+                    `uvm_info("RESPONDER", $sformatf("observed write @0x%0h = 0x%08h",
+                        tb_api::last_write_addr, tb_api::last_write_data), UVM_LOW)
+                    phase.drop_objection(this);
+                endtask
+            endclass
+            """)
+    elif vip_source == "generate_fresh":
         reg_access_test = textwrap.dedent(f"""\
             class {ip}_reg_access_test extends uvm_test;
                 `uvm_component_utils({ip}_reg_access_test)
@@ -1869,10 +2574,14 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         """)
 
 
-def emit_sv_list(ip: str, vip_source: str) -> str:
-    lines = [f"{ip}_sanity_test", f"{ip}_reg_access_test"]
-    if vip_source == "generate_fresh":
-        lines.append(f"{ip}_random_seq_test")
+def emit_sv_list(ip: str, vip_source: str, has_ral: bool = True) -> str:
+    lines = [f"{ip}_sanity_test"]
+    if has_ral:
+        lines.append(f"{ip}_reg_access_test")
+        if vip_source == "generate_fresh":
+            lines.append(f"{ip}_random_seq_test")
+    else:
+        lines.append(f"{ip}_responder_smoke_test")
     return "\n".join(lines) + "\n"
 
 
@@ -1903,6 +2612,8 @@ def main() -> int:
 
     ip = intake["ip_name"]
     bus = _bus(intake)
+    direction = _direction(intake)
+    has_ral = _bus_has_ral(intake)
     has_dpi = intake.get("ref_model_language") == "c_dpi"
     dpi = intake.get("ref_model_inputs") if has_dpi else None
     addr_w = _addr_width(intake)
@@ -1921,17 +2632,19 @@ def main() -> int:
     plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(), True))
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
-    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source), False))
+    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral), False))
     plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl), False))
 
     if bus == "apb":
         plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
-    else:
+    elif bus == "ahb":
         plan.append((ip_root / "tb" / "ahb_if.sv", emit_ahb_if(), False))
+    else:
+        plan.append((ip_root / "tb" / "axi_lite_if.sv", emit_axi_lite_if(), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(bus, addr_w), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus, direction), False))
     if vip_source == "generate_fresh":
         if bus == "apb":
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
@@ -1941,7 +2654,7 @@ def main() -> int:
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_monitor.sv", emit_apb_monitor(), False))
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequencer.sv", emit_apb_sequencer(), False))
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_sequence.sv", emit_apb_sequence(), False))
-        else:
+        elif bus == "ahb":
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agent.sv", emit_ahb_agent_pkg(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_agt_config.sv", emit_ahb_agt_config(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_trans.sv", emit_ahb_trans(), False))
@@ -1949,21 +2662,32 @@ def main() -> int:
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_monitor.sv", emit_ahb_monitor(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequencer.sv", emit_ahb_sequencer(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequence.sv", emit_ahb_sequence(), False))
+        else:
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_agent.sv", emit_axi_lite_agent_pkg(direction), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_agt_config.sv", emit_axi_lite_agt_config(), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_trans.sv", emit_axi_lite_trans(), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_driver.sv", emit_axi_lite_driver(direction), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_monitor.sv", emit_axi_lite_monitor(direction), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequencer.sv", emit_axi_lite_sequencer(), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequence.sv", emit_axi_lite_sequence(), False))
     else:
         plan.append((ip_root / "tb" / "external_vip.f", emit_external_vip_f(external_vip), False))
-    plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
-    if vip_source == "generate_fresh":
+    if has_ral:
+        plan.append((ip_root / "tb" / "ral" / f"{ip}_reg_block.sv", emit_ral_block(ip, regs), False))
+    if vip_source == "generate_fresh" and has_ral:
         if bus == "apb":
             plan.append((ip_root / "tb" / "ral" / f"{ip}_apb_adapter.sv", emit_apb_adapter(ip), False))
-        else:
+        elif bus == "ahb":
             plan.append((ip_root / "tb" / "ral" / f"{ip}_ahb_adapter.sv", emit_ahb_adapter(ip), False))
+        else:
+            plan.append((ip_root / "tb" / "ral" / f"{ip}_axi_lite_adapter.sv", emit_axi_lite_adapter(ip), False))
 
     if has_dpi:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_ref_pkg.sv", emit_dpi_ref_pkg(ip, dpi), False))
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_dpi_proto.h", emit_dpi_proto_h(ip, dpi), False))
 
     plan.append((ip_root / "test" / f"{ip}_pkg.sv", emit_test_pkg(intake, regs, dpi), False))
-    plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip, vip_source), False))
+    plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip, vip_source, has_ral), False))
 
     # ---- Symlink-guard ALL targets first; refuse any if any fails ----
     resolved = []

@@ -1,0 +1,18 @@
+# gen-tb expected output for axi_lite_simple_slave fixture with external AXI-Lite VIP reuse.
+
+.prj_top                                   exists
+script/makefile                            nonempty
+script/setup.sh                            nonempty
+script/check_env.sh                        nonempty
+script/design.f                            nonempty
+script/tb.f                                nonempty
+top/axi_lite_simple_slave_tb_top.sv        nonempty
+tb/axi_lite_if.sv                          nonempty
+tb/external_vip.f                          nonempty
+tb/tb_api/tb_api_pkg.sv                    nonempty
+tb/tb_api/tb_api_primitives.svh            nonempty
+tb/ral/axi_lite_simple_slave_reg_block.sv  nonempty
+test/axi_lite_simple_slave_pkg.sv          nonempty
+test/sv_list                               nonempty
+work                                       dir
+work/_gen_audit                            dir

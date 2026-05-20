@@ -113,9 +113,19 @@ aes_rows = [
 ]
 
 
+axi_lite_slave_rows = [
+    ("ID",      0x00, 32, "RO", 0x000000A5, "id",  "31:0", "RO", 0x000000A5, "Fixed identification"),
+    ("SCRATCH", 0x04, 32, "RW", 0x00000000, "val", "31:0", "RW", 0,         "Scratch register"),
+]
+
+
 def main():
     write_xlsx(ROOT / "evals/fixtures/uart16550/spec/uart_regs.xlsx", uart_rows)
     write_xlsx(ROOT / "evals/fixtures/aes128/spec/aes_regs.xlsx", aes_rows)
+    write_xlsx(
+        ROOT / "evals/fixtures/axi_lite_simple_slave/spec/axi_lite_simple_slave_regs.xlsx",
+        axi_lite_slave_rows,
+    )
 
 
 if __name__ == "__main__":

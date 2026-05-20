@@ -24,11 +24,11 @@
 │   ├── <ip>_tb_top.sv                    clocks, reset, DUT, bus interface instantiation
 │   └── <ip>_assertions.sv                bound assertions (deferred to v1.2)
 ├── tb/
-│   ├── <bus>_if.sv                       APB/AHB interface with input clk/rst (G12)
+│   ├── <bus>_if.sv                       APB/AHB/AXI-Lite interface with input clk/rst (G12)
 │   ├── tb_api/
 │   │   ├── tb_api_pkg.sv                 package header (regenerated each scaffold)
 │   │   └── tb_api_primitives.svh         load-bearing tasks (preserved by default; see tb_api.md)
-│   ├── <bus>_agt_top/                    generated APB/AHB UVM agent
+│   ├── <bus>_agt_top/                    generated APB/AHB/AXI-Lite UVM agent
 │   ├── seq_lib/                          v1.2 — DV-persona sequences
 │   ├── ral/
 │   │   └── <ip>_reg_block.sv             RAL (v1.1 stub; v1.2 full per ral_gen.md)

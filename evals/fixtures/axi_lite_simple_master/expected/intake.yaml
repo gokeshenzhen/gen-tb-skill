@@ -1,0 +1,24 @@
+ip_name: axi_lite_simple_master
+ip_root: /tmp/gen-tb-dryrun-axi_lite_simple_master-v1/axi_lite_simple_master
+test_prefix: axi_lite_simple_master
+
+rtl_state: found_in_place
+bus_protocol: axi_lite
+bus_direction: master
+axi_lite_vip_source: generate_fresh
+ref_model_language: skip
+clock:
+  aclk_freq_mhz: 100
+  aclk_period_ns: 10
+  additional_domains: []
+reset:
+  aresetn_polarity: active_low
+  aresetn_duration_cycles: 16
+uvm_version: '1.2'
+axi_addr_width: 12
+endianness: msb_first
+coverage:
+  enable: false
+sanity_extras: []
+
+simulator: vcs

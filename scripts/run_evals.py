@@ -111,12 +111,22 @@ def _emit_audit_inputs(eval_def: dict, ip_root: Path):
     # rtl_discovery.yaml — re-emit with current paths
     bus_match = re.search(r"^bus_protocol:\s*(\w+)", intake_content, re.MULTILINE)
     bus = bus_match.group(1) if bus_match else "apb"
-    emit_rtl_discovery(ip_root, name, audit / "rtl_discovery.yaml", bus=bus)
+    dir_match = re.search(r"^bus_direction:\s*(\w+)", intake_content, re.MULTILINE)
+    direction = dir_match.group(1) if dir_match else "slave"
+    emit_rtl_discovery(ip_root, name, audit / "rtl_discovery.yaml", bus=bus, direction=direction)
 
-    # registers.yaml — parse from the fixture xlsx
+    # registers.yaml — parse from the fixture xlsx, or copy a pre-baked one,
+    # or fall back to an empty register set when the fixture has no registers.
     xlsx_candidates = list((fixture_root / "spec").glob("*_regs.xlsx"))
+    prebaked = expected / "registers.yaml"
     if xlsx_candidates:
         parse_xlsx_to_yaml(xlsx_candidates[0], norm / "registers.yaml", norm / "parse_report.md")
+    elif prebaked.exists():
+        (norm / "registers.yaml").write_text(prebaked.read_text())
+    else:
+        (norm / "registers.yaml").write_text(
+            f"version: 1\nip_name: {name}\nregisters: []\n"
+        )
     emit_behavior_and_report(name, fixture_root / "spec", norm, audit / "intake.yaml")
 
 
