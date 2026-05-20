@@ -38,6 +38,13 @@ what it found in `scaffold_audit.json`.
 6. Keeps `sanity_test` and `reg_access_test` on `tb_api`, so importing a
    user VIP does not require gen-tb to guess that VIP's runtime API.
 
+For `import_only`, scaffold imports interface and agent/package compile
+units but does not compile obvious vendor test packages such as
+`*_test_pkg.sv`. Those packages often re-include internal env/test files
+and assume the VIP's standalone top. Built-in sanity and reg-access
+tests should stay on `tb_api` until a project-local `drive_with_vip`
+glue layer is added.
+
 ## Import-only boundary
 
 `import_only` is **direct import**, not universal auto-adaptation. It

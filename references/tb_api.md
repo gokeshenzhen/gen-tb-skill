@@ -17,7 +17,9 @@ This file provides the APB *known-good* implementation. For
 `bus_protocol: ahb`, `scripts/scaffold.py` emits the AHB-Lite variant
 described in `references/ahb.md` with the same public
 `tb_api::write/read/expect_reg` surface. Generation only parameterizes
-the package header and selects the bus-specific primitive body.
+the package header and selects the bus-specific primitive body. The
+AHB read primitive samples `hrdata` after `hready` has settled to avoid
+the same-cycle NBA race seen in the reused AHB VIP flow.
 
 ## Package skeleton
 

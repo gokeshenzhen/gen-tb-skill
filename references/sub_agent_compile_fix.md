@@ -85,7 +85,8 @@ Rules:
 - Do not remove tests or weaken positive checks to get a pass.
 - Do not replace real RTL/VIP behavior with mocks.
 - If external VIP reuse is import_only, fix filelist/include/package
-  order only.
+  order only, and skip standalone vendor test packages when they are
+  only used by the VIP's own top-level harness.
 - If external VIP reuse is drive_with_vip, you may add generated bridge
   modules/classes/sequences under tb/ or test/ and config_db wiring under
   top/ or test/.

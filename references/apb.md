@@ -176,7 +176,10 @@ Both paths are implemented in v1.2, with different maturity levels:
 - `reuse_my_vip` defaults to `apb_vip_reuse_level: import_only`: it
   preserves the user's files, emits `tb/external_vip.f`, and keeps the
   built-in tests on `tb_api` instead of guessing arbitrary third-party
-  runtime APIs
+  runtime APIs. In import-only mode, scaffold may omit obvious vendor
+  test packages such as `*_test_pkg.sv` when those packages are only
+  used by the VIP's standalone top and re-include internal env/test
+  files.
 - `apb_vip_reuse_level: drive_with_vip` means Phase 5 must generate
   project-local glue and one minimal external-VIP read/write smoke
   sequence without editing the user's VIP source
