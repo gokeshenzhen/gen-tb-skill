@@ -25,8 +25,13 @@ Scaffold scans `ahb_vip_path`, emits `tb/external_vip.f`, adds it to
 `script/tb.f`, and skips `tb/ahb_agt_top/` plus the generated AHB RAL
 adapter. User VIP files are read-only.
 
+For `import_only`, scaffold imports interface and agent/package compile units
+but does not compile obvious vendor test packages such as `*_test_pkg.sv`.
+Those packages often re-include internal env/test files and assume the VIP's
+standalone top. Generated sanity and register tests should stay on `tb_api`
+until a project-local `drive_with_vip` glue layer is added.
+
 If the VIP needs a specific interface name, config key, package import,
 or factory type, implement that as generated glue under `tb/`, `top/`,
 or `test/` during compile-fix. Do not patch the VIP in place unless the
 user explicitly changes scope to repairing the VIP itself.
-

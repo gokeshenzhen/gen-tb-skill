@@ -241,14 +241,20 @@ def _scan_external_vip(raw_path: str, ip_root: Path, bus: str) -> dict[str, Any]
         for name in re.findall(r"\binterface\s+([A-Za-z_]\w*)\b", text):
             interfaces.append((name, path))
 
-    package_units = sorted({p for _, p in packages})
+    test_pkg_units = {
+        p
+        for name, p in packages
+        if re.search(r"(^|_)test(_pkg)?$", name, re.IGNORECASE)
+        or re.search(r"(^|_)test(_pkg)?\.sv$", p.name, re.IGNORECASE)
+    }
+    package_units = sorted({p for _, p in packages if p not in test_pkg_units})
     interface_units = sorted({p for _, p in interfaces})
     if filelist_units:
-        compile_units = filelist_units
+        compile_units = [p for p in filelist_units if p not in test_pkg_units]
     elif package_units:
         compile_units = interface_units + [p for p in package_units if p not in interface_units]
     else:
-        compile_units = sv_files
+        compile_units = [p for p in sv_files if p not in test_pkg_units]
 
     incdirs = sorted({vip_root, *filelist_incdirs, *(p.parent for p in scanned_files)})
     return {
@@ -673,6 +679,7 @@ def emit_tb_api_primitives(bus: str) -> str:
                 vif.hprot   <= 4'b0011;
                 @(posedge vif.hclk);
                 while (vif.hready !== 1'b1) @(posedge vif.hclk);
+                #1ps;
                 data = vif.hrdata;
                 _idle();
             endtask
