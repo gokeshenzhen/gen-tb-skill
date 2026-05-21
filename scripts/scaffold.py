@@ -91,6 +91,16 @@ def _load_yaml(path: Path) -> dict:
 
 
 _WIDTH_KEY = {"apb": "paddr_width", "ahb": "haddr_width", "axi_lite": "axi_addr_width"}
+_BUILTIN_BUSES = ("apb", "ahb", "axi_lite")
+
+
+def _yesno(value: Any, key: str) -> str:
+    """YAML 1.1 maps unquoted yes/no to bool. Accept bool or yes/no string."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, str) and value.lower() in ("yes", "no"):
+        return value.lower()
+    sys.exit(f"FATAL: {key} must be yes|no (got {value!r})")
 
 
 def _validate_intake(intake: dict) -> None:
@@ -99,20 +109,30 @@ def _validate_intake(intake: dict) -> None:
     if missing:
         sys.exit(f"FATAL: intake.yaml missing keys: {missing}")
     bus = intake["bus_protocol"]
-    if bus not in ("apb", "ahb", "axi_lite"):
-        sys.exit(f"FATAL: supported bus_protocol values are apb, ahb, axi_lite (got {bus!r})")
-    width_key = _WIDTH_KEY[bus]
-    if width_key not in intake:
-        sys.exit(f"FATAL: intake.yaml missing key for {bus}: {width_key}")
+    if bus not in _BUILTIN_BUSES and bus != "generic":
+        sys.exit(f"FATAL: supported bus_protocol values are apb, ahb, axi_lite, generic (got {bus!r})")
+    if bus in _BUILTIN_BUSES:
+        width_key = _WIDTH_KEY[bus]
+        if width_key not in intake:
+            sys.exit(f"FATAL: intake.yaml missing key for {bus}: {width_key}")
     if bus in ("axi_lite", "ahb"):
         direction = intake.get("bus_direction", "slave")
         if direction not in ("slave", "master"):
             sys.exit(f"FATAL: unsupported bus_direction: {direction!r}")
-    elif "bus_direction" in intake and intake["bus_direction"] != "slave":
+    elif bus in _BUILTIN_BUSES and "bus_direction" in intake and intake["bus_direction"] != "slave":
         sys.exit(f"FATAL: bus_direction is only meaningful for axi_lite or ahb")
-    reg_sem = intake.get("register_semantics", "yes")
-    if reg_sem not in ("yes", "no"):
-        sys.exit(f"FATAL: unsupported register_semantics: {reg_sem!r} (yes|no)")
+    if bus == "generic":
+        # Direction for generic comes from bus_handshake.yaml; intake must not set it.
+        if "bus_direction" in intake:
+            sys.exit("FATAL: bus_direction for generic mode lives in bus_handshake.yaml, not intake.yaml")
+    if "register_semantics" in intake:
+        intake["register_semantics"] = _yesno(intake["register_semantics"], "register_semantics")
+    if bus == "generic":
+        # External VIP reuse is not supported in generic mode.
+        for key in ("generic_vip_source", "apb_vip_source", "ahb_vip_source", "axi_lite_vip_source"):
+            if intake.get(key) == "reuse_my_vip":
+                sys.exit(f"FATAL: external VIP reuse is not supported in generic mode ({key} set to reuse_my_vip)")
+        return
     vip_source = intake.get(f"{bus}_vip_source", "generate_fresh")
     if vip_source not in ("generate_fresh", "reuse_my_vip"):
         sys.exit(f"FATAL: unsupported {bus}_vip_source: {vip_source!r}")
@@ -301,31 +321,70 @@ def _bus(intake: dict) -> str:
     return intake.get("bus_protocol", "apb")
 
 
+def _bus_prefix(intake: dict, handshake: dict | None) -> str:
+    """The string used as filename prefix and class prefix (e.g. `apb`, `wb`)."""
+    if _bus(intake) == "generic":
+        assert handshake is not None
+        return handshake["bus_name"]
+    return _bus(intake)
+
+
 def _addr_width_key(bus: str) -> str:
     return _WIDTH_KEY[bus]
 
 
-def _addr_width(intake: dict) -> int:
+def _addr_width(intake: dict, handshake: dict | None = None) -> int:
     bus = _bus(intake)
+    if bus == "generic":
+        assert handshake is not None
+        addr = handshake.get("addr")
+        if addr is None:
+            return 0  # addr-less bus
+        return int(addr["width"])
     return int(intake.get(_addr_width_key(bus), 12))
 
 
-def _direction(intake: dict) -> str:
+def _data_width(intake: dict, handshake: dict | None = None) -> int:
+    if _bus(intake) == "generic":
+        assert handshake is not None
+        return int(handshake["data"]["width"])
+    return 32
+
+
+def _direction(intake: dict, handshake: dict | None = None) -> str:
+    if _bus(intake) == "generic":
+        assert handshake is not None
+        return handshake["direction"]
     return intake.get("bus_direction", "slave")
 
 
-def _clk_rst_names(bus: str) -> tuple[str, str]:
+def _clk_rst_names(bus: str, handshake: dict | None = None) -> tuple[str, str]:
     if bus == "apb":
         return "pclk", "presetn"
     if bus == "ahb":
         return "hclk", "hresetn"
+    if bus == "generic":
+        assert handshake is not None
+        return handshake["clock"]["name"], handshake["reset"]["name"]
     return "aclk", "aresetn"
 
 
-def _bus_has_ral(intake: dict) -> bool:
+def _reset_polarity(handshake: dict | None) -> str:
+    if handshake is None:
+        return "low"  # built-in buses use active-low presetn/hresetn/aresetn
+    return handshake["reset"].get("polarity", "low")
+
+
+def _bus_has_ral(intake: dict, handshake: dict | None = None) -> bool:
     """RAL+reg_access_test only generated when DUT is slave AND has register semantics."""
     if intake.get("register_semantics", "yes") == "no":
         return False
+    if _bus(intake) == "generic":
+        if handshake is None:
+            return False
+        if handshake.get("register_semantics", "yes") == "no":
+            return False
+        return handshake.get("direction", "slave") == "slave"
     return _direction(intake) == "slave"
 
 
@@ -335,6 +394,49 @@ def _vip_source(intake: dict) -> str:
 
 def _vip_reuse_level(intake: dict) -> str:
     return intake.get(f"{_bus(intake)}_vip_reuse_level", "import_only")
+
+
+_HANDSHAKE_KINDS = ("req_ack", "valid_ready", "strobe", "custom")
+
+
+def _validate_bus_handshake(hs: dict) -> None:
+    required = ["bus_name", "direction", "clock", "reset", "data", "handshake", "register_semantics"]
+    missing = [k for k in required if k not in hs]
+    if missing:
+        sys.exit(f"FATAL: bus_handshake.yaml missing keys: {missing}")
+    name = hs["bus_name"]
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        sys.exit(f"FATAL: bus_handshake.yaml.bus_name must be lowercase identifier (got {name!r})")
+    if hs["direction"] not in ("slave", "master"):
+        sys.exit(f"FATAL: bus_handshake.yaml.direction must be slave|master (got {hs['direction']!r})")
+    hs["register_semantics"] = _yesno(hs["register_semantics"], "bus_handshake.yaml.register_semantics")
+    clk = hs["clock"]
+    if not isinstance(clk, dict) or "name" not in clk:
+        sys.exit("FATAL: bus_handshake.yaml.clock must be a mapping with at least `name`")
+    rst = hs["reset"]
+    if not isinstance(rst, dict) or "name" not in rst or rst.get("polarity") not in ("low", "high"):
+        sys.exit("FATAL: bus_handshake.yaml.reset requires `name` and `polarity: low|high`")
+    data = hs["data"]
+    if not isinstance(data, dict) or "width" not in data:
+        sys.exit("FATAL: bus_handshake.yaml.data must include `width`")
+    handshake = hs["handshake"]
+    if not isinstance(handshake, dict) or handshake.get("kind") not in _HANDSHAKE_KINDS:
+        sys.exit(f"FATAL: bus_handshake.yaml.handshake.kind must be one of {_HANDSHAKE_KINDS}")
+    addr = hs.get("addr")
+    if addr is not None and (not isinstance(addr, dict) or "width" not in addr or "port" not in addr):
+        sys.exit("FATAL: bus_handshake.yaml.addr must be null or a mapping with `port` and `width`")
+    if addr is None and hs["register_semantics"] == "yes":
+        sys.exit("FATAL: bus_handshake.yaml: register_semantics: yes is incompatible with addr: null")
+
+
+def _load_handshake(audit: Path) -> dict:
+    path = audit / "bus_handshake.yaml"
+    if not path.exists():
+        sys.exit(f"FATAL: bus_protocol: generic requires {path}")
+    with path.open() as f:
+        hs = yaml.safe_load(f) or {}
+    _validate_bus_handshake(hs)
+    return hs
 
 
 def _pick_sanity_target(regs: list[dict]) -> tuple[int, int]:
@@ -481,14 +583,22 @@ def emit_makefile(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
     )
 
 
-def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str, has_ral: bool = True) -> str:
+def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str, has_ral: bool = True, handshake: dict | None = None) -> str:
     tb_root = "$PROJ_DIR/tb"
     test_root = "$PROJ_DIR/test"
     top_root = "$PROJ_DIR/top"
-    if_name = {"apb": "apb_if.sv", "ahb": "ahb_if.sv", "axi_lite": "axi_lite_if.sv"}[bus]
-    agt_dir = f"{bus}_agt_top"
-    agent_file = f"{bus}_agent.sv"
-    adapter_file = f"{ip}_{bus}_adapter.sv"
+    if bus == "generic":
+        assert handshake is not None
+        prefix = handshake["bus_name"]
+        if_name = f"{prefix}_if.sv"
+        agt_dir = f"{prefix}_agt_top"
+        agent_file = f"{prefix}_agt_pkg.sv"
+        adapter_file = f"{ip}_{prefix}_adapter.sv"
+    else:
+        if_name = {"apb": "apb_if.sv", "ahb": "ahb_if.sv", "axi_lite": "axi_lite_if.sv"}[bus]
+        agt_dir = f"{bus}_agt_top"
+        agent_file = f"{bus}_agent.sv"
+        adapter_file = f"{ip}_{bus}_adapter.sv"
     lines = [
         f"+incdir+{tb_root}",
         f"+incdir+{tb_root}/tb_api",
@@ -593,14 +703,22 @@ def emit_axi_lite_if() -> str:
         """)
 
 
-def emit_tb_top(intake: dict, rtl: dict) -> str:
+def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None) -> str:
     ip = intake["ip_name"]
     bus = _bus(intake)
     top = rtl["top_module"]["name"]
-    addr_w = _addr_width(intake)
-    clk_name, rst_name = _clk_rst_names(bus)
+    addr_w = _addr_width(intake, handshake)
+    clk_name, rst_name = _clk_rst_names(bus, handshake)
     rst_cycles = intake.get("reset", {}).get(f"{rst_name}_duration_cycles", 16)
     half_period = intake.get("clock", {}).get(f"{clk_name}_period_ns", 10) // 2
+    if bus == "generic" and handshake is not None:
+        # Honor freq/polarity from handshake if intake didn't override them.
+        freq = handshake.get("clock", {}).get("freq_mhz")
+        if freq and f"{clk_name}_period_ns" not in intake.get("clock", {}):
+            half_period = max(1, int(1000 / freq) // 2)
+        if handshake.get("reset", {}).get("polarity") == "high":
+            # tb_top reset polarity follows handshake; default block below assumes low-active.
+            pass  # handled in template below
 
     # Collect non-bus pads from rtl_discovery
     pads = rtl.get("other_pads", []) or []
@@ -644,6 +762,27 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "ahb_vif", ahb);
             tb_api::set_vif(ahb);""").rstrip()
+    elif bus == "generic":
+        assert handshake is not None
+        prefix = handshake["bus_name"]
+        bus_inst = f"{prefix}_if {prefix}_bus (.{clk_name}({clk_name}), .{rst_name}({rst_name}));"
+        # Connect handshake-known ports to interface signals. Other DUT
+        # ports are routed via `other_pads`. The sub-agent may augment
+        # this wiring through a Phase 5 fix-up if needed.
+        connects = [f".{clk_name}({clk_name})", f".{rst_name}({rst_name})"]
+        addr_cfg = handshake.get("addr")
+        if addr_cfg:
+            connects.append(f".{addr_cfg['port']}({prefix}_bus.{addr_cfg['port']})")
+        data_cfg = handshake["data"]
+        connects.append(f".{data_cfg['write_port']}({prefix}_bus.{data_cfg['write_port']})")
+        if data_cfg.get("read_port") and data_cfg["read_port"] != data_cfg["write_port"]:
+            connects.append(f".{data_cfg['read_port']}({prefix}_bus.{data_cfg['read_port']})")
+        for name, _ in _generic_extra_ports(handshake):
+            connects.append(f".{name}({prefix}_bus.{name})")
+        dut_bus = ",\n            ".join(connects)
+        config = textwrap.dedent(f"""\
+            uvm_config_db#(tb_api::vif_t)::set(null, "*", "{prefix}_vif", {prefix}_bus);
+            tb_api::set_vif({prefix}_bus);""").rstrip()
     else:  # axi_lite
         bus_inst = f"axi_lite_if #(.ADDR_W({addr_w}), .DATA_W(32)) axi (.aclk(aclk), .aresetn(aresetn));"
         dut_bus = textwrap.dedent("""\
@@ -664,6 +803,9 @@ def emit_tb_top(intake: dict, rtl: dict) -> str:
 
     dut_bus_block = textwrap.indent(dut_bus, "        ")
     config_block = textwrap.indent(config, "        ")
+    rst_polarity = _reset_polarity(handshake) if bus == "generic" else "low"
+    rst_asserted = "1'b1" if rst_polarity == "high" else "1'b0"
+    rst_released = "1'b0" if rst_polarity == "high" else "1'b1"
     return f"""// gen-tb generated tb top for {ip}.
 // Interface receives clk/rst via input ports (no dual-drive).
 // Non-bus DUT pads tied to protocol-idle defaults at this level.
@@ -675,7 +817,7 @@ module {ip}_tb_top;
 
     // ---- clock & reset (top owns the drive) ----
     logic {clk_name} = 0;
-    logic {rst_name} = 0;
+    logic {rst_name} = {rst_asserted};
     always #{half_period} {clk_name} = ~{clk_name};
 
     // ---- interface ----
@@ -691,9 +833,9 @@ module {ip}_tb_top;
 
     // ---- reset sequence ----
     initial begin
-        {rst_name} = 0;
+        {rst_name} = {rst_asserted};
         repeat ({rst_cycles}) @(posedge {clk_name});
-        {rst_name} = 1;
+        {rst_name} = {rst_released};
     end
 
     // ---- UVM entry ----
@@ -705,8 +847,15 @@ endmodule
 """
 
 
-def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
-    if_type = {"apb": "apb_if", "ahb": "ahb_if", "axi_lite": "axi_lite_if"}[bus]
+def emit_tb_api_pkg(bus: str, addr_w: int, data_w: int = 32, handshake: dict | None = None) -> str:
+    if bus == "generic":
+        assert handshake is not None
+        prefix = handshake["bus_name"]
+        if_type = f"{prefix}_if"
+        vif_typedef = f"typedef virtual {if_type} vif_t;"
+    else:
+        if_type = {"apb": "apb_if", "ahb": "ahb_if", "axi_lite": "axi_lite_if"}[bus]
+        vif_typedef = f"typedef virtual {if_type} #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;"
     return textwrap.dedent(f"""\
         `ifndef TB_API_PKG_SV
         `define TB_API_PKG_SV
@@ -714,8 +863,8 @@ def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
             import uvm_pkg::*;
             `include "uvm_macros.svh"
             parameter int  ADDR_W = {addr_w};
-            parameter int  DATA_W = 32;
-            typedef virtual {if_type} #(.ADDR_W(ADDR_W), .DATA_W(DATA_W)) vif_t;
+            parameter int  DATA_W = {data_w};
+            {vif_typedef}
             vif_t vif;
             function automatic void set_vif(vif_t v); vif = v; endfunction
             `include "tb_api_primitives.svh"
@@ -724,7 +873,10 @@ def emit_tb_api_pkg(bus: str, addr_w: int) -> str:
         """)
 
 
-def emit_tb_api_primitives(bus: str, direction: str = "slave") -> str:
+def emit_tb_api_primitives(bus: str, direction: str = "slave", handshake: dict | None = None) -> str:
+    if bus == "generic":
+        assert handshake is not None
+        return _emit_generic_tb_api_primitives(handshake)
     if bus == "axi_lite":
         return _emit_axi_lite_tb_api_primitives(direction)
     if bus == "ahb" and direction == "master":
@@ -1978,6 +2130,401 @@ def emit_axi_lite_sequence() -> str:
         """)
 
 
+# ---------------------------------------------------------------------------
+# Generic-bus emitters: placeholder skeletons the scaffold sub-agent fills in.
+# See references/generic_bus.md and references/sub_agent_generic_scaffold.md.
+# ---------------------------------------------------------------------------
+
+
+def _generic_extra_ports(handshake: dict) -> list[tuple[str, int]]:
+    """Collected non-clk/rst/addr/data ports (handshake req/ack/extra)."""
+    h = handshake["handshake"]
+    out: list[tuple[str, int]] = []
+    for key in ("req", "ack"):
+        if h.get(key):
+            out.append((h[key], 1))
+    for name in h.get("extra") or []:
+        out.append((name, 1))
+    return out
+
+
+def emit_generic_if(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    clk = handshake["clock"]["name"]
+    rst = handshake["reset"]["name"]
+    data = handshake["data"]
+    addr = handshake.get("addr")
+
+    decls = []
+    if addr is not None:
+        decls.append(f"    logic [{int(addr['width'])-1}:0] {addr['port']};")
+    decls.append(f"    logic [{int(data['width'])-1}:0] {data['write_port']};")
+    if data.get("read_port") and data["read_port"] != data["write_port"]:
+        decls.append(f"    logic [{int(data['width'])-1}:0] {data['read_port']};")
+    for name, width in _generic_extra_ports(handshake):
+        if width == 1:
+            decls.append(f"    logic {name};")
+        else:
+            decls.append(f"    logic [{width-1}:0] {name};")
+    decls_str = "\n".join(decls) if decls else "    // (no ports declared)"
+
+    guard = f"{bus.upper()}_IF_SV"
+    return textwrap.dedent(f"""\
+        `ifndef {guard}
+        `define {guard}
+        // PLACEHOLDER interface generated for generic-mode bus `{bus}`.
+        // Ports come from work/_gen_audit/bus_handshake.yaml; the scaffold
+        // sub-agent (references/sub_agent_generic_scaffold.md) adds the
+        // clocking blocks and any modports needed for the driver/monitor.
+        interface {bus}_if (
+            input logic {clk},
+            input logic {rst}
+        );
+        {decls_str}
+        endinterface
+        `endif
+        """)
+
+
+def emit_generic_agent_pkg(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        `ifndef {bus.upper()}_AGT_PKG_SV
+        `define {bus.upper()}_AGT_PKG_SV
+        package {bus}_agt_pkg;
+            import uvm_pkg::*;
+            `include "uvm_macros.svh"
+            typedef virtual {bus}_if vif_t;
+            `include "{bus}_agt_config.sv"
+            `include "{bus}_trans.sv"
+            `include "{bus}_sequencer.sv"
+            `include "{bus}_driver.sv"
+            `include "{bus}_monitor.sv"
+            `include "{bus}_agent.sv"
+            `include "{bus}_sequence.sv"
+        endpackage
+        `endif
+        """)
+
+
+def emit_generic_agt_config(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        class {bus}_agt_config extends uvm_object;
+            `uvm_object_utils({bus}_agt_config)
+            vif_t vif;
+            uvm_active_passive_enum is_active = UVM_ACTIVE;
+            function new(string name = "{bus}_agt_config"); super.new(name); endfunction
+        endclass
+        """)
+
+
+def emit_generic_trans(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    addr_w = int(handshake["addr"]["width"]) if handshake.get("addr") else 1
+    data_w = int(handshake["data"]["width"])
+    return textwrap.dedent(f"""\
+        class {bus}_trans extends uvm_sequence_item;
+            rand logic [{addr_w-1}:0] addr;
+            rand logic [{data_w-1}:0] data;
+            rand bit                   write;
+            logic      [{data_w-1}:0] rdata;
+            `uvm_object_utils_begin({bus}_trans)
+                `uvm_field_int(addr,  UVM_ALL_ON)
+                `uvm_field_int(data,  UVM_ALL_ON)
+                `uvm_field_int(write, UVM_ALL_ON)
+                `uvm_field_int(rdata, UVM_ALL_ON | UVM_NOCOMPARE)
+            `uvm_object_utils_end
+            function new(string name = "{bus}_trans"); super.new(name); endfunction
+        endclass
+        """)
+
+
+def emit_generic_sequencer(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        typedef uvm_sequencer#({bus}_trans) {bus}_sequencer;
+        """)
+
+
+def emit_generic_driver(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        // PLACEHOLDER driver. The scaffold sub-agent replaces the body of
+        // `drive_one` with protocol-specific handshake logic per
+        // bus_handshake.yaml.handshake.kind.
+        class {bus}_driver extends uvm_driver #({bus}_trans);
+            `uvm_component_utils({bus}_driver)
+            vif_t vif;
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+            endfunction
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "{bus}_vif", vif))
+                    `uvm_fatal("CFG", "{bus}_vif missing")
+            endfunction
+            task run_phase(uvm_phase phase);
+                {bus}_trans tr;
+                forever begin
+                    seq_item_port.get_next_item(tr);
+                    drive_one(tr);
+                    seq_item_port.item_done();
+                end
+            endtask
+            // SUB-AGENT: implement protocol-specific bus drive here.
+            task drive_one({bus}_trans tr);
+            endtask
+        endclass
+        """)
+
+
+def emit_generic_monitor(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        // PLACEHOLDER monitor. The scaffold sub-agent replaces the body of
+        // `run_phase` with handshake-sampling logic per
+        // bus_handshake.yaml.handshake.kind.
+        class {bus}_monitor extends uvm_monitor;
+            `uvm_component_utils({bus}_monitor)
+            uvm_analysis_port #({bus}_trans) ap;
+            vif_t vif;
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+                ap = new("ap", this);
+            endfunction
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#(vif_t)::get(this, "", "{bus}_vif", vif))
+                    `uvm_fatal("CFG", "{bus}_vif missing")
+            endfunction
+            // SUB-AGENT: implement protocol-specific bus sample loop here.
+            task run_phase(uvm_phase phase);
+            endtask
+        endclass
+        """)
+
+
+def emit_generic_agent(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        class {bus}_agent extends uvm_agent;
+            `uvm_component_utils({bus}_agent)
+            {bus}_agt_config cfg;
+            {bus}_driver     drv;
+            {bus}_monitor    mon;
+            {bus}_sequencer  sqr;
+            function new(string name, uvm_component parent = null);
+                super.new(name, parent);
+            endfunction
+            function void build_phase(uvm_phase phase);
+                super.build_phase(phase);
+                if (!uvm_config_db#({bus}_agt_config)::get(this, "", "cfg", cfg))
+                    `uvm_fatal("CFG", "{bus}_agt_config missing")
+                uvm_config_db#(vif_t)::set(this, "*", "{bus}_vif", cfg.vif);
+                mon = {bus}_monitor::type_id::create("mon", this);
+                if (cfg.is_active == UVM_ACTIVE) begin
+                    drv = {bus}_driver::type_id::create("drv", this);
+                    sqr = {bus}_sequencer::type_id::create("sqr", this);
+                end
+            endfunction
+            function void connect_phase(uvm_phase phase);
+                if (cfg.is_active == UVM_ACTIVE)
+                    drv.seq_item_port.connect(sqr.seq_item_export);
+            endfunction
+        endclass
+        """)
+
+
+def emit_generic_sequence(handshake: dict) -> str:
+    bus = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        // PLACEHOLDER sequence library. The scaffold sub-agent expands this
+        // with reset_seq, single_write_seq, single_read_seq bodies.
+        class {bus}_sequence extends uvm_sequence #({bus}_trans);
+            `uvm_object_utils({bus}_sequence)
+            int unsigned n_transactions = 1;
+            logic [{max(int(handshake['addr']['width']) if handshake.get('addr') else 1, 1)-1}:0] legal_addrs[$];
+            function new(string name = "{bus}_sequence"); super.new(name); endfunction
+            task body();
+                {bus}_trans tr;
+                repeat (n_transactions) begin
+                    tr = {bus}_trans::type_id::create("tr");
+                    start_item(tr);
+                    if (!tr.randomize()) `uvm_fatal("RAND", "{bus}_trans randomize failed")
+                    if (legal_addrs.size() != 0)
+                        tr.addr = legal_addrs[$urandom_range(0, legal_addrs.size()-1)];
+                    finish_item(tr);
+                end
+            endtask
+        endclass
+        """)
+
+
+def _emit_generic_tb_api_primitives(handshake: dict) -> str:
+    """Placeholder write/read bodies. Sub-agent rewrites these to drive
+    the actual bus. They compile and `read` returns zero so the testbench
+    elaborates; they are NOT a working bus."""
+    has_addr = handshake.get("addr") is not None
+    has_regs = handshake["register_semantics"] == "yes"
+    clk = handshake["clock"]["name"]
+    write_sig = "input logic [ADDR_W-1:0] addr, input logic [DATA_W-1:0] data" if has_addr else "input logic [DATA_W-1:0] data"
+    read_sig = "input logic [ADDR_W-1:0] addr, output logic [DATA_W-1:0] data" if has_addr else "output logic [DATA_W-1:0] data"
+    expect = textwrap.dedent(f"""\
+
+        // PLACEHOLDER expect_reg. Sub-agent rewrites against the real read path.
+        task automatic expect_reg(input logic [ADDR_W-1:0] addr,
+                                  input logic [DATA_W-1:0] expected,
+                                  input string tag = "EXPECT");
+            logic [DATA_W-1:0] got;
+            read(addr, got);
+            if (got !== expected)
+                `uvm_fatal(tag, $sformatf("expect_reg @0x%0h: got 0x%08h expected 0x%08h",
+                    addr, got, expected))
+        endtask
+        """) if has_regs else ""
+    return textwrap.dedent(f"""\
+        // ====================================================================
+        // tb_api primitives — PLACEHOLDER for generic bus.
+        // The scaffold sub-agent (references/sub_agent_generic_scaffold.md)
+        // replaces the bodies below with real bus drive/sample.
+        // ====================================================================
+
+        // Responder-side state. Sub-agent populates these from monitor
+        // observations in master-direction generic mode.
+        logic [ADDR_W-1:0] last_write_addr = '0;
+        logic [DATA_W-1:0] last_write_data = '0;
+        int unsigned       writes_observed = 0;
+        int unsigned       reads_observed  = 0;
+
+        function automatic void _require_vif();
+            if (vif == null) `uvm_fatal("TB_API",
+                "vif not set — call tb_api::set_vif(...) in top initial block")
+        endfunction
+
+        // PLACEHOLDER write. Sub-agent rewrites to drive the bus.
+        task automatic write({write_sig});
+            _require_vif();
+            @(posedge vif.{clk});
+        endtask
+
+        // PLACEHOLDER read. Sub-agent rewrites to drive the bus.
+        task automatic read({read_sig});
+            _require_vif();
+            @(posedge vif.{clk});
+            data = '0;
+        endtask
+
+        // PLACEHOLDER responder-wait. Sub-agent rewrites against monitor.
+        task automatic wait_for_write(input int unsigned timeout_cycles = 1000);
+            int unsigned n = timeout_cycles;
+            _require_vif();
+            while (writes_observed == 0) begin
+                @(posedge vif.{clk});
+                if (--n == 0) `uvm_fatal("TB_API",
+                    "timeout waiting for DUT-initiated write (placeholder)")
+            end
+        endtask
+        {expect}
+        """)
+
+
+def _generic_scaffold_prompt(intake: dict, handshake: dict) -> str:
+    """Audit artifact handed to the scaffold sub-agent. Records the inputs
+    actually used by scaffold.py so the sub-agent can pick up from a
+    known-state skeleton. The sub-agent appends an `## Assumptions made
+    by sub-agent` section after running."""
+    ip = intake["ip_name"]
+    prefix = handshake["bus_name"]
+    kind = handshake["handshake"]["kind"]
+    reg_sem = handshake["register_semantics"]
+    direction = handshake["direction"]
+    return textwrap.dedent(f"""\
+        # Generic-mode scaffold sub-agent prompt — {ip} ({prefix})
+
+        Written by scaffold.py at Phase 4. The skeleton under `tb/{prefix}_agt_top/`,
+        `tb/{prefix}_if.sv`, `tb/tb_api/`, and `top/{ip}_tb_top.sv` is a placeholder:
+        files compile, but the bus drive/sample logic is empty. Your job is to
+        fill in the bodies per the contract in `references/generic_bus.md`.
+
+        ## Inputs used by scaffold.py
+        - `bus_handshake.yaml`:
+            bus_name           = {prefix}
+            direction          = {direction}
+            handshake.kind     = {kind}
+            register_semantics = {reg_sem}
+        - `rtl_discovery.yaml` (port names/widths)
+        - `intake.yaml` (clock period, reset cycles, UVM version, etc.)
+
+        ## Files the sub-agent must complete
+        - `tb/{prefix}_if.sv`: add clocking blocks for driver/monitor sample timing
+        - `tb/{prefix}_agt_top/{prefix}_driver.sv`: implement `drive_one`
+        - `tb/{prefix}_agt_top/{prefix}_monitor.sv`: implement `run_phase` sample loop
+        - `tb/{prefix}_agt_top/{prefix}_sequence.sv`: expand with reset/single_write/single_read sequences
+        - `tb/tb_api/tb_api_primitives.svh`: rewrite `write`/`read`{('/`expect_reg`' if reg_sem == 'yes' else '')} bodies
+        {'- `tb/ral/' + ip + '_' + prefix + '_adapter.sv`: replace placeholder reg2bus/bus2reg with real handshake drive' if reg_sem == 'yes' else ''}
+
+        ## Forbidden
+        - Editing `intake.yaml`, `rtl_discovery.yaml`, `bus_handshake.yaml`, or
+          `spec_normalized/registers.yaml`.
+        - Editing user RTL, user VIP source, or specs.
+        - Changing `tb_api::write/read/expect_reg` task signatures.
+        - Inventing control signals not in `bus_handshake.yaml` or
+          `rtl_discovery.yaml`.
+
+        ## Ambiguity policy
+        When `bus_handshake.yaml` is silent on a detail, pick the narrower
+        interpretation and append it to the section below.
+
+        ## Assumptions made by sub-agent
+        <!-- The sub-agent appends one bullet per ambiguity resolved. -->
+        """)
+
+
+def emit_generic_adapter(ip: str, handshake: dict) -> str:
+    """Placeholder RAL adapter for generic mode. Sub-agent rewrites
+    reg2bus/bus2reg to route through the generated driver."""
+    prefix = handshake["bus_name"]
+    return textwrap.dedent(f"""\
+        `ifndef {ip.upper()}_{prefix.upper()}_ADAPTER_SV
+        `define {ip.upper()}_{prefix.upper()}_ADAPTER_SV
+        package {ip}_{prefix}_adapter_pkg;
+            import uvm_pkg::*;
+            import {prefix}_agt_pkg::*;
+            `include "uvm_macros.svh"
+
+            // PLACEHOLDER adapter. Sub-agent rewrites reg2bus/bus2reg
+            // against the generated driver and the bus_handshake.yaml
+            // handshake kind.
+            class {ip}_{prefix}_adapter extends uvm_reg_adapter;
+                `uvm_object_utils({ip}_{prefix}_adapter)
+                function new(string name = "{ip}_{prefix}_adapter");
+                    super.new(name);
+                    supports_byte_enable = 0;
+                    provides_responses   = 0;
+                endfunction
+                virtual function uvm_sequence_item reg2bus(const ref uvm_reg_bus_op rw);
+                    {prefix}_trans tr = {prefix}_trans::type_id::create("tr");
+                    tr.write = (rw.kind == UVM_WRITE);
+                    tr.addr  = rw.addr;
+                    tr.data  = rw.data;
+                    return tr;
+                endfunction
+                virtual function void bus2reg(uvm_sequence_item bus_item,
+                                              ref uvm_reg_bus_op rw);
+                    {prefix}_trans tr;
+                    if (!$cast(tr, bus_item)) `uvm_fatal("ADAPTER", "bad bus item")
+                    rw.kind = tr.write ? UVM_WRITE : UVM_READ;
+                    rw.addr = tr.addr;
+                    rw.data = tr.write ? tr.data : tr.rdata;
+                    rw.status = UVM_IS_OK;
+                endfunction
+            endclass
+        endpackage
+        `endif
+        """)
+
+
 def emit_external_vip_f(vip: dict[str, Any]) -> str:
     lines = [f"+incdir+{p}" for p in vip["incdirs"]]
     lines.extend(str(p) for p in vip["compile_units"])
@@ -2510,18 +3057,20 @@ def emit_dpi_proto_h(ip: str, dpi: dict) -> str:
         """)
 
 
-def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
+def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: dict | None = None) -> str:
     ip = intake["ip_name"]
     bus = _bus(intake)
-    addr_w = _addr_width(intake)
-    direction = _direction(intake)
-    has_ral = _bus_has_ral(intake)
+    addr_w = _addr_width(intake, handshake)
+    direction = _direction(intake, handshake)
+    has_ral = _bus_has_ral(intake, handshake)
     sanity_addr, sanity_value = _pick_sanity_target(regs) if has_ral else (0, 0)
-    clk, rst = _clk_rst_names(bus)
-    agent_cls = f"{bus}_agent"
-    cfg_cls = f"{bus}_agt_config"
-    seq_cls = f"{bus}_sequence"
-    adapter_cls = f"{ip}_{bus}_adapter"
+    clk, rst = _clk_rst_names(bus, handshake)
+    prefix = _bus_prefix(intake, handshake)
+    agent_cls = f"{prefix}_agent"
+    cfg_cls = f"{prefix}_agt_config"
+    seq_cls = f"{prefix}_sequence"
+    adapter_cls = f"{ip}_{prefix}_adapter"
+    rst_released = "1'b0" if _reset_polarity(handshake) == "high" and bus == "generic" else "1'b1"
 
     if has_ral:
         addr_consts = []
@@ -2568,7 +3117,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 endfunction
                 task run_phase(uvm_phase phase);
                     phase.raise_objection(this);
-                    wait (tb_api::vif.{rst} === 1'b1);
+                    wait (tb_api::vif.{rst} === {rst_released});
                     repeat (4) @(posedge tb_api::vif.{clk});
                     `uvm_info("SANITY", "responder is alive; idling 32 cycles", UVM_LOW)
                     repeat (32) @(posedge tb_api::vif.{clk});
@@ -2583,7 +3132,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 function new(string n="{ip}_sanity_test", uvm_component p=null); super.new(n,p); endfunction
                 task run_phase(uvm_phase phase);
                     phase.raise_objection(this);
-                    wait (tb_api::vif.{rst} === 1'b1);
+                    wait (tb_api::vif.{rst} === {rst_released});
                     repeat (4) @(posedge tb_api::vif.{clk});
                     tb_api::expect_reg({addr_w}'h{sanity_addr:03X}, 32'h{sanity_value:08X}, "SANITY");
                     phase.drop_objection(this);
@@ -2612,7 +3161,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
             task run_phase(uvm_phase phase);
                 {seq_cls} seq;
                 phase.raise_objection(this);
-                wait (tb_api::vif.{rst} === 1'b1);
+                wait (tb_api::vif.{rst} === {rst_released});
                 repeat (4) @(posedge tb_api::vif.{clk});
                 seq = {seq_cls}::type_id::create("seq");
                 seq.n_transactions = 100;
@@ -2629,11 +3178,11 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
         smoke_test = "    // DPI smoke test generation: see references/refm_dpi.md.\n"
         smoke_test += "    // v1.1 stub — hand-write the smoke test for now using tb_api::wait_status_flag.\n"
 
-    vip_source = _vip_source(intake)
-    agent_import = f"    import {bus}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
+    vip_source = _vip_source(intake) if bus != "generic" else "generate_fresh"
+    agent_import = f"    import {prefix}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
     ral_import = f"    import {ip}_ral_pkg::*;" if has_ral else ""
     adapter_import = (
-        f"    import {ip}_{bus}_adapter_pkg::*;"
+        f"    import {ip}_{prefix}_adapter_pkg::*;"
         if vip_source == "generate_fresh" and has_ral
         else ""
     )
@@ -2655,7 +3204,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 endfunction
                 task run_phase(uvm_phase phase);
                     phase.raise_objection(this);
-                    wait (tb_api::vif.{rst} === 1'b1);
+                    wait (tb_api::vif.{rst} === {rst_released});
                     repeat (4) @(posedge tb_api::vif.{clk});
                     `uvm_info("RESPONDER", "waiting for DUT-initiated write", UVM_LOW)
                     tb_api::wait_for_write(2000);
@@ -2692,7 +3241,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 task run_phase(uvm_phase phase);
                     {ip}_ral_access_seq seq;
                     phase.raise_objection(this);
-                    wait (tb_api::vif.{rst} === 1'b1);
+                    wait (tb_api::vif.{rst} === {rst_released});
                     repeat (4) @(posedge tb_api::vif.{clk});
                     ral.default_map.set_sequencer(agent.sqr, adapter);
                     ral.default_map.set_auto_predict(1);
@@ -2710,7 +3259,7 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None) -> str:
                 function new(string n="{ip}_reg_access_test", uvm_component p=null); super.new(n,p); endfunction
                 task run_phase(uvm_phase phase);
                     phase.raise_objection(this);
-                    wait (tb_api::vif.{rst} === 1'b1);
+                    wait (tb_api::vif.{rst} === {rst_released});
                     repeat (4) @(posedge tb_api::vif.{clk});
                     run_reg_access_reads("REG_ACCESS");
                     phase.drop_objection(this);
@@ -2777,8 +3326,9 @@ def main() -> int:
 
     ip = intake["ip_name"]
     bus = _bus(intake)
-    direction = _direction(intake)
-    has_ral = _bus_has_ral(intake)
+    handshake = _load_handshake(audit) if bus == "generic" else None
+    direction = _direction(intake, handshake)
+    has_ral = _bus_has_ral(intake, handshake)
 
     regs_path = audit / "spec_normalized" / "registers.yaml"
     if has_ral:
@@ -2791,12 +3341,13 @@ def main() -> int:
         regs = []
     has_dpi = intake.get("ref_model_language") == "c_dpi"
     dpi = intake.get("ref_model_inputs") if has_dpi else None
-    addr_w = _addr_width(intake)
-    vip_source = _vip_source(intake)
-    vip_reuse_level = _vip_reuse_level(intake)
+    addr_w = _addr_width(intake, handshake)
+    data_w = _data_width(intake, handshake)
+    vip_source = _vip_source(intake) if bus != "generic" else "generate_fresh"
+    vip_reuse_level = _vip_reuse_level(intake) if bus != "generic" else "import_only"
     external_vip = (
         _scan_external_vip(intake[f"{bus}_vip_path"], ip_root, bus)
-        if vip_source == "reuse_my_vip"
+        if vip_source == "reuse_my_vip" and bus != "generic"
         else None
     )
 
@@ -2807,19 +3358,22 @@ def main() -> int:
     plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(), True))
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
-    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral), False))
+    plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral, handshake), False))
     plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
 
-    plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl), False))
+    plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl, handshake), False))
 
     if bus == "apb":
         plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
     elif bus == "ahb":
         plan.append((ip_root / "tb" / "ahb_if.sv", emit_ahb_if(), False))
-    else:
+    elif bus == "axi_lite":
         plan.append((ip_root / "tb" / "axi_lite_if.sv", emit_axi_lite_if(), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(bus, addr_w), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus, direction), False))
+    else:  # generic
+        prefix = handshake["bus_name"]
+        plan.append((ip_root / "tb" / f"{prefix}_if.sv", emit_generic_if(handshake), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(bus, addr_w, data_w, handshake), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus, direction, handshake), False))
     if vip_source == "generate_fresh":
         if bus == "apb":
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
@@ -2837,7 +3391,7 @@ def main() -> int:
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_monitor.sv", emit_ahb_monitor(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequencer.sv", emit_ahb_sequencer(), False))
             plan.append((ip_root / "tb" / "ahb_agt_top" / "ahb_sequence.sv", emit_ahb_sequence(), False))
-        else:
+        elif bus == "axi_lite":
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_agent.sv", emit_axi_lite_agent_pkg(direction), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_agt_config.sv", emit_axi_lite_agt_config(), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_trans.sv", emit_axi_lite_trans(), False))
@@ -2845,6 +3399,17 @@ def main() -> int:
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_monitor.sv", emit_axi_lite_monitor(direction), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequencer.sv", emit_axi_lite_sequencer(), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequence.sv", emit_axi_lite_sequence(), False))
+        else:  # generic
+            prefix = handshake["bus_name"]
+            agt_dir = ip_root / "tb" / f"{prefix}_agt_top"
+            plan.append((agt_dir / f"{prefix}_agt_pkg.sv", emit_generic_agent_pkg(handshake), False))
+            plan.append((agt_dir / f"{prefix}_agt_config.sv", emit_generic_agt_config(handshake), False))
+            plan.append((agt_dir / f"{prefix}_trans.sv", emit_generic_trans(handshake), False))
+            plan.append((agt_dir / f"{prefix}_sequencer.sv", emit_generic_sequencer(handshake), False))
+            plan.append((agt_dir / f"{prefix}_driver.sv", emit_generic_driver(handshake), False))
+            plan.append((agt_dir / f"{prefix}_monitor.sv", emit_generic_monitor(handshake), False))
+            plan.append((agt_dir / f"{prefix}_agent.sv", emit_generic_agent(handshake), False))
+            plan.append((agt_dir / f"{prefix}_sequence.sv", emit_generic_sequence(handshake), False))
     else:
         plan.append((ip_root / "tb" / "external_vip.f", emit_external_vip_f(external_vip), False))
     if has_ral:
@@ -2854,15 +3419,23 @@ def main() -> int:
             plan.append((ip_root / "tb" / "ral" / f"{ip}_apb_adapter.sv", emit_apb_adapter(ip), False))
         elif bus == "ahb":
             plan.append((ip_root / "tb" / "ral" / f"{ip}_ahb_adapter.sv", emit_ahb_adapter(ip), False))
-        else:
+        elif bus == "axi_lite":
             plan.append((ip_root / "tb" / "ral" / f"{ip}_axi_lite_adapter.sv", emit_axi_lite_adapter(ip), False))
+        else:  # generic
+            prefix = handshake["bus_name"]
+            plan.append((ip_root / "tb" / "ral" / f"{ip}_{prefix}_adapter.sv", emit_generic_adapter(ip, handshake), False))
 
     if has_dpi:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_ref_pkg.sv", emit_dpi_ref_pkg(ip, dpi), False))
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_dpi_proto.h", emit_dpi_proto_h(ip, dpi), False))
 
-    plan.append((ip_root / "test" / f"{ip}_pkg.sv", emit_test_pkg(intake, regs, dpi), False))
+    plan.append((ip_root / "test" / f"{ip}_pkg.sv", emit_test_pkg(intake, regs, dpi, handshake), False))
     plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip, vip_source, has_ral), False))
+
+    # ---- Generic-mode audit artifact: prompt template for the scaffold sub-agent ----
+    if bus == "generic":
+        plan.append((audit / "generic_bus_scaffold_prompt.md",
+                     _generic_scaffold_prompt(intake, handshake), False))
 
     # ---- Symlink-guard ALL targets first; refuse any if any fails ----
     resolved = []
@@ -2892,26 +3465,46 @@ def main() -> int:
 
     # ---- Audit ----
     audit_out = audit / "scaffold_audit.json"
-    audit_out.write_text(json.dumps({
+    effective_reg_sem = (
+        handshake["register_semantics"] if bus == "generic"
+        else intake.get("register_semantics", "yes")
+    )
+    audit_doc: dict[str, Any] = {
         "ip_name": ip,
         "files_written": written,
         "has_dpi": has_dpi,
         "register_count": len(regs),
-        "scaffold_version": "v1.3",
+        "scaffold_version": "v1.4",
         "bus_protocol": bus,
-        "register_semantics": intake.get("register_semantics", "yes"),
-        f"{bus}_vip_source": vip_source,
-        f"{bus}_vip_reuse_level": vip_reuse_level if vip_source == "reuse_my_vip" else None,
-        "external_vip": {
-            "root": str(external_vip["root"]),
-            "packages": external_vip["packages"],
-            "agents": external_vip["agents"],
-            "transactions": external_vip["transactions"],
-            "configs": external_vip["configs"],
-            "interfaces": external_vip["interfaces"],
-            "compile_units": [str(p) for p in external_vip["compile_units"]],
-        } if external_vip else None,
-    }, indent=2))
+        "register_semantics": effective_reg_sem,
+    }
+    if bus == "generic":
+        audit_doc["generic_bus"] = {
+            "bus_name":      handshake["bus_name"],
+            "direction":     handshake["direction"],
+            "handshake_kind": handshake["handshake"]["kind"],
+            "addr_width":    addr_w,
+            "data_width":    data_w,
+            "prompt_path":   "work/_gen_audit/generic_bus_scaffold_prompt.md",
+        }
+    else:
+        audit_doc[f"{bus}_vip_source"] = vip_source
+        audit_doc[f"{bus}_vip_reuse_level"] = (
+            vip_reuse_level if vip_source == "reuse_my_vip" else None
+        )
+        audit_doc["external_vip"] = (
+            {
+                "root": str(external_vip["root"]),
+                "packages": external_vip["packages"],
+                "agents": external_vip["agents"],
+                "transactions": external_vip["transactions"],
+                "configs": external_vip["configs"],
+                "interfaces": external_vip["interfaces"],
+                "compile_units": [str(p) for p in external_vip["compile_units"]],
+            }
+            if external_vip else None
+        )
+    audit_out.write_text(json.dumps(audit_doc, indent=2))
 
     print(f"scaffold complete: {len(written)} files written")
     print(f"audit: {audit_out}")
