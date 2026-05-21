@@ -110,6 +110,9 @@ def _validate_intake(intake: dict) -> None:
             sys.exit(f"FATAL: unsupported bus_direction: {direction!r}")
     elif "bus_direction" in intake and intake["bus_direction"] != "slave":
         sys.exit(f"FATAL: bus_direction is only meaningful for axi_lite or ahb")
+    reg_sem = intake.get("register_semantics", "yes")
+    if reg_sem not in ("yes", "no"):
+        sys.exit(f"FATAL: unsupported register_semantics: {reg_sem!r} (yes|no)")
     vip_source = intake.get(f"{bus}_vip_source", "generate_fresh")
     if vip_source not in ("generate_fresh", "reuse_my_vip"):
         sys.exit(f"FATAL: unsupported {bus}_vip_source: {vip_source!r}")
@@ -320,7 +323,9 @@ def _clk_rst_names(bus: str) -> tuple[str, str]:
 
 
 def _bus_has_ral(intake: dict) -> bool:
-    """RAL+reg_access_test only generated when the DUT is a slave."""
+    """RAL+reg_access_test only generated when DUT is slave AND has register semantics."""
+    if intake.get("register_semantics", "yes") == "no":
+        return False
     return _direction(intake) == "slave"
 
 
@@ -2767,8 +2772,6 @@ def main() -> int:
     audit = ip_root / "work" / "_gen_audit"
     intake = _load_yaml(audit / "intake.yaml")
     rtl = _load_yaml(audit / "rtl_discovery.yaml")
-    regs_doc = _load_yaml(audit / "spec_normalized" / "registers.yaml")
-    regs = regs_doc.get("registers", [])
 
     _validate_intake(intake)
 
@@ -2776,6 +2779,16 @@ def main() -> int:
     bus = _bus(intake)
     direction = _direction(intake)
     has_ral = _bus_has_ral(intake)
+
+    regs_path = audit / "spec_normalized" / "registers.yaml"
+    if has_ral:
+        regs_doc = _load_yaml(regs_path)
+        regs = regs_doc.get("registers", [])
+    elif regs_path.exists():
+        with regs_path.open() as f:
+            regs = (yaml.safe_load(f) or {}).get("registers", []) or []
+    else:
+        regs = []
     has_dpi = intake.get("ref_model_language") == "c_dpi"
     dpi = intake.get("ref_model_inputs") if has_dpi else None
     addr_w = _addr_width(intake)
@@ -2886,6 +2899,7 @@ def main() -> int:
         "register_count": len(regs),
         "scaffold_version": "v1.3",
         "bus_protocol": bus,
+        "register_semantics": intake.get("register_semantics", "yes"),
         f"{bus}_vip_source": vip_source,
         f"{bus}_vip_reuse_level": vip_reuse_level if vip_source == "reuse_my_vip" else None,
         "external_vip": {

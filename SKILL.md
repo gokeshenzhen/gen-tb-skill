@@ -1,14 +1,21 @@
 ---
 name: gen-tb
-description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable APB / AHB-Lite / AXI4-Lite-based UVM tb with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
+description: Generate a complete UVM testbench scaffold for a single IP from its spec documents (docx/pdf/md) and register table (xlsx/csv/md/IP-XACT). Use whenever the user asks to "generate a UVM tb", "build a verification environment", "scaffold a testbench", "create a UVC", "set up DV for this IP", or anything equivalent in Chinese ("帮我生成验证环境", "搭一个 tb", "做 UVM 环境", "做这个 IP 的验证"). Also trigger when the user points at a directory containing an IP spec and asks Claude to "verify it" / "test it" without naming UVM explicitly. Produces a runnable UVM tb (APB / AHB-Lite / AXI4-Lite as first-class buses; other single-channel buses via a generic fallback) with sanity + register-access tests passing, plus a DE-friendly `tb_api::` task BFM.
 ---
 
 # gen-tb — UVM Testbench Scaffold Generator
 
 ## Purpose
 
-Generate a directory-aligned UVM testbench for one APB slave, AHB-Lite
-(slave or master), or AXI4-Lite (slave or master) IP from:
+Generate a directory-aligned UVM testbench for one IP from:
+
+Built-in first-class buses: APB slave, AHB-Lite (slave or master),
+AXI4-Lite (slave or master). Other single-channel request/response
+buses (I2C, SPI, Wishbone, OBI, custom register buses, …) are handled
+by a generic fallback that reuses the same layout, sim flow, and
+`tb_api` surface — see §Scope below.
+
+Inputs:
 
 - behavioral spec: `*.docx`, `*.pdf`, `*.md`
 - register table: `*.xlsx`, `*.csv`, markdown table, IP-XACT XML
@@ -22,18 +29,30 @@ The result must compile, run `<ip>_sanity_test`, run
 
 ## Scope
 
-| Dimension | v1 scope | Planned |
-|---|---|---|
-| Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | AXI4 full |
-| Simulator | VCS | xrun, vsim |
-| Ref model | none, SV, C-DPI, Python-DPI | — |
-| Spec input | docx, pdf, md | — |
-| Reg input | xlsx, csv, md, IP-XACT | — |
+| Dimension | Built-in (high-quality scaffold) | Generic fallback | Planned |
+|---|---|---|---|
+| Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | any single-channel request/response bus the scaffold sub-agent can infer from spec + the three built-in exemplars (e.g. I2C, SPI, Wishbone, OBI, custom register buses) | AXI4 full |
+| Simulator | VCS | VCS | xrun, vsim |
+| Ref model | none, SV, C-DPI, Python-DPI | none, SV, C-DPI, Python-DPI | — |
+| Spec input | docx, pdf, md | docx, pdf, md | — |
+| Reg input | xlsx, csv, md, IP-XACT | xlsx, csv, md, IP-XACT (optional — set `register_semantics: no` for non-register buses) | — |
 
-If the user asks for anything outside this table, say so and offer the
-closest in-scope alternative. AXI4 full (with bursts/IDs/outstanding) is
-out of scope; if the DUT has AXI ports but uses only single-beat
-transfers, generate the AXI4-Lite environment and note the assumption.
+Generic fallback is a best-effort path: directory layout and sim flow
+stay authoritative, but the bus-shaped pieces (`<bus>_if.sv`, agent,
+sequence library, `tb_api` body) are inferred per-IP by a constrained
+scaffold sub-agent that pattern-matches on the three built-in
+references. Tell the user up-front that scaffold correctness is lower
+and the chance of an `unresolved.md` delivery is higher than in
+built-in mode. Load `references/generic_bus.md` only when entering
+this path.
+
+AXI4 full (bursts/IDs/outstanding) is out of scope in both modes — it
+must never be routed to generic. If the DUT has AXI ports, follow the
+AXI4-full detector in Phase 1 and the mandatory question in Phase 2.
+For DUTs that expose AXI signals but use only single-beat transfers,
+generate the AXI4-Lite environment with a monitor-side assertion that
+`AWLEN == 0 && ARLEN == 0`, so any later burst use fails loud at sim
+time rather than relying on user review.
 
 Do not use this skill for debugging an existing UVM environment, formal
 verification, gate-level sim, DFT, or a multi-master SoC subsystem.
@@ -89,8 +108,30 @@ the bus the DUT sits on (`bus_direction: slave|master`) — slave is the
 default and means the TB drives a master BFM; master means the TB
 provides a memory-backed slave responder.
 
+For buses that fall through to generic mode, `rtl_discovery.yaml`
+does **not** record `bus_direction`. The direction is collected in
+Phase 2 into `bus_handshake.yaml.direction` and that is the single
+source of truth for generic mode.
+
 For details, load `references/rtl_discovery.md` and
 `references/rtl_stub.md`.
+
+### Bus Classification
+
+After signal recording, classify the bus:
+
+1. If the top's port set matches the APB / AHB-Lite / AXI4-Lite
+   signature, set `bus_protocol` accordingly. **Unchanged path.**
+2. **AXI4-full detector.** If any of `awlen | arlen | awburst |
+   arburst | awid | arid` is present with width > 0, set
+   `axi_full_signature: true` in `rtl_discovery.yaml`. The Phase 2
+   mandatory question below decides whether to refuse or degrade
+   to AXI4-Lite. An AXI signal set must never be routed to
+   `bus_protocol: generic`.
+3. Otherwise set `bus_protocol: unknown` and emit a
+   `candidate_signals:` block (the request/response-looking port
+   group) into `rtl_discovery.yaml`. Do not guess a name — the
+   bus name is collected in Phase 2.
 
 ### Existing Bus VIP
 
@@ -126,8 +167,9 @@ Ask unresolved items in small batches. Questions to ask only when not
 already known:
 
 - RTL state: found, external path, generated stub, none
-- bus protocol: APB, AHB, or AXI4-Lite
-- bus direction (AXI4-Lite only): DUT is slave (default) or master
+- bus protocol: APB, AHB, AXI4-Lite, or `generic` (when Phase 1 set
+  `bus_protocol: unknown`)
+- bus direction (AHB-Lite, AXI4-Lite, generic): DUT is slave (default) or master
 - bus VIP source: generate fresh, reuse existing VIP
 - external VIP reuse level: import only, drive with VIP
 - reference model language: none, SV, C-DPI, Python-DPI
@@ -138,10 +180,52 @@ already known:
 - coverage: enabled or skipped
 - required extra smoke tests
 
+### AXI4-full Mandatory Question
+
+When `rtl_discovery.yaml` has `axi_full_signature: true`, ask exactly:
+*"Does this DUT use bursts (>1 beat), IDs, or outstanding?"* This
+question is mandatory and cannot be skipped.
+
+- Yes → hard refuse. Write `unresolved.md` pointing to planned
+  AXI4-full work and exit. Do not enter Phase 3.
+- No → route to the built-in AXI4-Lite path. Phase 4 must emit a
+  monitor-side assertion that `AWLEN == 0 && ARLEN == 0`, so any
+  later burst use fails loud at sim time.
+- Unanswered / skipped → treat as Yes (refuse). Generative defaults
+  are conservative.
+
+### Generic Bus Intake Sub-Batch
+
+When `bus_protocol` resolves to `generic`, collect the structured
+handshake description into `work/_gen_audit/bus_handshake.yaml`:
+
+```yaml
+bus_name: <short token, used in filenames>
+direction: slave | master
+clock: { name: <port>, freq_mhz: <n> }
+reset: { name: <port>, polarity: low|high, cycles: <n> }
+addr:  { port: <port>, width: <n> } | null     # null = non-addressed
+data:  { write_port: <port>, read_port: <port>, width: <n> }
+handshake:
+  kind: req_ack | valid_ready | strobe | custom
+  req:   <port>
+  ack:   <port>
+  extra: [ <other control ports to model> ]
+burst: none | simple_incr
+register_semantics: yes | no
+notes: |
+  Free-form. Primary handshake hint to the scaffold sub-agent.
+```
+
+Confirm `register_semantics` explicitly. `no` means RAL and
+`<ip>_reg_access_test` are not generated and Phase 6 degrades to
+`<ip>_responder_smoke_test`.
+
 All generated tests must be named `<ip>_<purpose>_test`.
 
 Every question turn must include an abort/restart option. Save partial
-answers to `work/_gen_audit/intake.yaml` and resume from it if present.
+answers to `work/_gen_audit/intake.yaml` and `bus_handshake.yaml`, and
+resume from them if present.
 
 ## Phase 3: Normalize
 
@@ -153,9 +237,13 @@ work/_gen_audit/spec_normalized/behavior.md
 work/_gen_audit/spec_normalized/parse_report.md
 ```
 
-Never proceed to Phase 4 without valid `registers.yaml`. Missing
-behavior parsers may degrade to warnings, but a missing/unparseable
-register table is blocking.
+Never proceed to Phase 4 without valid `registers.yaml`, **except**
+when `bus_handshake.yaml.register_semantics == no` in generic mode —
+that case has no register table by design, and `registers.yaml` is
+optional. `behavior.md` and `parse_report.md` are still required in
+all cases. Missing behavior parsers may degrade to warnings, but a
+missing/unparseable register table is blocking outside the
+`register_semantics: no` exception.
 
 Field-level reset values win over register-level reset values. Emit
 warnings for unparseable offsets, widths, bit ranges, PDF tables,
@@ -178,8 +266,14 @@ Key scaffold rules:
 - never copy or modify user RTL
 - if `<bus>_vip_source: generate_fresh`, emit `tb/<bus>_agt_top/`
 - if `reuse_my_vip`, emit `tb/external_vip.f` and skip fresh agent files
+- external VIP reuse is supported only for built-in buses; generic
+  mode always generates fresh (no `generic_vip_source: reuse_my_vip`)
 - keep `tb_api` generated in all modes
-- generate `top/<ip>_tb_top.sv`, `tb/<bus>_if.sv`, RAL, tests, audit
+- generate `top/<ip>_tb_top.sv`, `tb/<bus>_if.sv`, tests, audit
+- RAL is generated when the configuration has register semantics: i.e.
+  built-in slave direction, or generic slave direction with
+  `register_semantics: yes`. Master direction in either mode skips
+  RAL; generic `register_semantics: no` skips RAL.
 
 For APB generation, load `references/apb.md`. For AHB generation, load
 `references/ahb.md`. For AXI4-Lite generation, load
@@ -190,6 +284,39 @@ For top wiring, load
 `references/top_sv.md`. For Makefile, load
 `references/makefile_contract.md`. For `tb_api`, load
 `references/tb_api.md`. For DPI, load `references/refm_dpi.md`.
+
+### Generic Bus Branch
+
+When `bus_protocol == generic`:
+
+1. `scripts/scaffold.py` emits the bus-agnostic skeleton it already
+   knows: top tree, `script/design.f`, lowercase `script/makefile`,
+   `script/tb.f`, test directory, audit dirs, empty
+   `tb/<bus>_agt_top/` with placeholder files, and a stub
+   `tb/<bus>_if.sv` containing only the ports from
+   `bus_handshake.yaml`. RAL is generated iff
+   `register_semantics: yes`.
+2. Invoke the **scaffold sub-agent** defined in
+   `references/sub_agent_generic_scaffold.md`. Inputs:
+   - `references/generic_bus.md` (contract)
+   - `references/apb.md`, `ahb.md`, `axi_lite.md` (exemplars)
+   - `references/directory_layout.md`, `top_sv.md`, `tb_api.md`
+   - `bus_handshake.yaml`, `rtl_discovery.yaml`, and
+     `registers.yaml` (only if `register_semantics: yes`)
+   - the placeholder files from step 1
+3. The sub-agent fills in `<bus>_if.sv`, driver, monitor, sequencer,
+   sequence library, `tb_api` body, and `top` wiring. Hard
+   constraints from §"Hard Constraints" still apply: writes confined
+   to `tb/ top/ test/ script/`; no user RTL/VIP/spec/regs edits.
+4. Persist:
+   - `work/_gen_audit/generic_bus_scaffold_prompt.md` — prompt
+     plus the sub-agent's assumption list,
+   - `work/_gen_audit/generic_bus_scaffold_diff.patch` — unified
+     diff of the sub-agent's writes against the placeholder
+     skeleton.
+
+   These are the audit artifacts a future maintainer reads when
+   deciding whether to promote this bus to a first-class reference.
 
 ## Phase 5: Compile-Fix
 
@@ -207,6 +334,9 @@ constrained sub-agent. The sub-agent may edit only:
 - `top/`
 - `test/`
 - `script/`
+- `work/_gen_audit/` (audit notes only — never `intake.yaml`,
+  `rtl_discovery.yaml`, `bus_handshake.yaml`, or
+  `spec_normalized/registers.yaml`)
 
 It may not edit user RTL, user VIP source, specs, or register tables.
 
@@ -216,8 +346,20 @@ For `reuse_my_vip`:
 - `drive_with_vip`: additionally create generated glue, interface
   bridge, config_db wiring, and one minimal read/write smoke sequence
 
-Stop after 5 compile attempts. Write `unresolved.md` with the last
-error, likely cause, and next action. Do not fake success.
+Stop after 5 compile attempts in built-in mode, **8 in generic mode**.
+Write `unresolved.md` with the last error, likely cause, and next
+action. Do not fake success.
+
+In generic mode, additionally load `references/generic_bus.md` and the
+three exemplar files (`apb.md`, `ahb.md`, `axi_lite.md`) so the
+compile-fix sub-agent can pattern-match against built-in buses. If
+attempt N's log is dominated by structural errors in a bus-agent file
+(not just typos), the sub-agent may **regenerate the whole file**
+instead of patching. Record this in
+`compile_fix_attempts/attempt_N.note.md`; it still counts as one
+attempt. The sub-agent may also revise the interface clocking block
+when a sampling-skew error is the diagnosed root cause. `tb_api`
+signatures must not change.
 
 Load `references/sub_agent_compile_fix.md` for the prompt template and
 constraints.
@@ -240,9 +382,22 @@ observe at least one valid write or read handshake from the DUT within
 a timeout. RAL and `<ip>_reg_access_test` are not generated for the
 master direction.
 
+In generic mode the mandatory test set depends on
+`bus_handshake.yaml.register_semantics`:
+
+- `yes` → `<ip>_sanity_test` + `<ip>_reg_access_test` (RAL-backed
+  read of a known reset value if any field has non-zero reset; else
+  read offset 0 and prove handshake completes).
+- `no` → `<ip>_responder_smoke_test` only (observe ≥1 valid
+  handshake under timeout). RAL is not generated.
+
+For generic mode with `direction: master`, the
+`<ip>_responder_smoke_test` rule applies regardless of
+`register_semantics`.
+
 If a mandatory runtime test fails, re-enter Phase 5 with a runtime-fix
-sub-agent for up to 3 attempts. Save results to
-`work/_gen_audit/sanity_result.json`.
+sub-agent for up to 3 attempts in built-in mode, **5 in generic mode**.
+Save results to `work/_gen_audit/sanity_result.json`.
 
 For algorithmic IPs with a reference model, also run one end-to-end
 smoke test that proves scoreboard/refmodel integration.
@@ -259,7 +414,13 @@ Write:
 - concise chat summary with exact next command
 
 The summary should state generated IP, tests passed, compile-fix attempt
-count, unresolved count, and:
+count, unresolved count, and (in generic mode) `bus_protocol: generic`
+plus which exemplars were used and which mandatory test set
+(`reg_access` vs `responder_smoke`) was applied. Generated `CLAUDE.md`
+in generic mode must additionally carry the manual review checklist
+from `references/generic_bus.md`.
+
+The summary's exact next command:
 
 ```bash
 cd <ip>/script && source setup.sh && make all SV_CASE=<ip>_sanity_test
@@ -304,6 +465,8 @@ Load only the relevant file for the current phase.
 | `references/tb_api.md` | DE task BFM |
 | `references/rtl_stub.md` | generated RTL stub |
 | `references/sub_agent_compile_fix.md` | compile-fix sub-agent |
+| `references/sub_agent_generic_scaffold.md` | generic-mode scaffold sub-agent |
+| `references/generic_bus.md` | generic-bus scaffold contract and review checklist |
 | `references/generated_claude_md.md` | generated CLAUDE.md |
 
 ## Evaluation
@@ -344,14 +507,27 @@ Task tool — pick whichever fits the iteration loop.
 
 ## Done Checklist
 
+Items marked *(conditional)* depend on the configuration; only the
+applicable ones must hold.
+
 - `<ip>/.prj_top` exists
 - symlink guard clean
 - `make comp` exits 0
 - no dual-driver or structural/procedural driver warnings
-- `<ip>_sanity_test` passes with a positive bus assertion
-- `<ip>_reg_access_test` passes
-- required smoke tests pass
+- the **mandatory test set for this configuration** all pass:
+  - built-in slave direction → `<ip>_sanity_test` (positive bus
+    assertion) + `<ip>_reg_access_test`
+  - built-in master direction → `<ip>_responder_smoke_test`
+  - generic + `register_semantics: yes` (slave) → `<ip>_sanity_test`
+    + `<ip>_reg_access_test`
+  - generic + `register_semantics: no`, or generic master →
+    `<ip>_responder_smoke_test`
+- required extra smoke tests pass
 - `parse_report.md`, `scaffold_audit.json`, `sanity_result.json`, and
   `unresolved.md` exist
-- generated `CLAUDE.md` exists
+- *(conditional, generic mode)* `bus_handshake.yaml`,
+  `generic_bus_scaffold_prompt.md`, and
+  `generic_bus_scaffold_diff.patch` exist
+- generated `CLAUDE.md` exists (generic mode: includes the manual
+  review checklist from `references/generic_bus.md`)
 - user receives concise summary and exact next command
