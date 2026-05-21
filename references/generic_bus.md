@@ -71,6 +71,13 @@ Naming rules:
   the DV/DE-facing surface contract. Generic mode never changes
   these task names or argument lists; only their bodies.
 
+`tb_api::expect_reg` semantic contract (must match built-in buses):
+- On success: emit `\`uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, got), UVM_LOW)`.
+  This success print is load-bearing — the eval harness and human
+  reviewers look for it as proof the bus actually moves data.
+- On mismatch: emit `\`uvm_fatal(tag, ...)` with addr/got/expected.
+- Do NOT remove the success print when rewriting the read path.
+
 Register-less buses (`register_semantics: no`):
 - Do not generate RAL, RAL package, or `<ip>_reg_access_test`.
 - `tb_api` exposes only `write(addr_or_token, data)` and

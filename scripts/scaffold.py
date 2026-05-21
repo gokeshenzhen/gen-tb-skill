@@ -2372,7 +2372,9 @@ def _emit_generic_tb_api_primitives(handshake: dict) -> str:
     read_sig = "input logic [ADDR_W-1:0] addr, output logic [DATA_W-1:0] data" if has_addr else "output logic [DATA_W-1:0] data"
     expect = textwrap.dedent(f"""\
 
-        // PLACEHOLDER expect_reg. Sub-agent rewrites against the real read path.
+        // expect_reg semantics match the built-in APB/AHB/AXI-Lite tb_api:
+        // print `@0x<addr> = 0x<value>` on success (UVM_LOW), fatal on
+        // mismatch. The sub-agent should preserve this success print.
         task automatic expect_reg(input logic [ADDR_W-1:0] addr,
                                   input logic [DATA_W-1:0] expected,
                                   input string tag = "EXPECT");
@@ -2381,6 +2383,8 @@ def _emit_generic_tb_api_primitives(handshake: dict) -> str:
             if (got !== expected)
                 `uvm_fatal(tag, $sformatf("expect_reg @0x%0h: got 0x%08h expected 0x%08h",
                     addr, got, expected))
+            else
+                `uvm_info(tag, $sformatf("@0x%0h = 0x%08h", addr, got), UVM_LOW)
         endtask
         """) if has_regs else ""
     return textwrap.dedent(f"""\
