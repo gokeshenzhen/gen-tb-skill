@@ -297,7 +297,9 @@ def _write_transcript(eval_def: dict, ctx: dict, scaffold_log: str,
 
 def run_one(eval_def: dict, scratch_root: Path, mode: str,
              eval_outdir: Path, *, with_generic_sub_agent: bool = False,
-             generic_sub_agent_timeout: int = 300) -> dict:
+             generic_sub_agent_timeout: int = 300,
+             compile_fix_budget: int = 0,
+             compile_fix_timeout: int = 240) -> dict:
     t0 = time.time()
     fixture_dir = FIXTURES / eval_def["fixture"]
     ctx = {
@@ -362,6 +364,28 @@ def run_one(eval_def: dict, scratch_root: Path, mode: str,
 
     # 3. Compile
     ctx["compile"] = run_make(ip_root, "comp", ctx["sanity_test"])
+
+    # 3a. Compile-fix retry loop (gated on budget > 0)
+    fix_attempts: list[dict] = []
+    if ctx["compile"]["rc"] != 0 and compile_fix_budget > 0 and mode == "with-skill":
+        generic_mode = bool(eval_def.get("requires_generic_sub_agent")) or \
+                       (ctx.get("sub_agent", {}).get("ok") is True)
+        for n in range(1, compile_fix_budget + 1):
+            fix = _run_compile_fix_attempt(
+                ip_root, n, ctx["sanity_test"],
+                generic_mode=generic_mode, timeout=compile_fix_timeout)
+            fix_attempts.append({"attempt": n, **{k: v for k, v in fix.items() if k != "log_tail"}})
+            if fix.get("skipped"):
+                # CLI missing / timeout — stop retrying, harness will report failure.
+                break
+            if not fix["ok"]:
+                continue  # sub-agent failed, try again
+            # Re-compile after each successful fix attempt
+            ctx["compile"] = run_make(ip_root, "comp", ctx["sanity_test"])
+            if ctx["compile"]["rc"] == 0:
+                break
+    ctx["compile_fix_attempts"] = fix_attempts
+
     # 4. Run each test referenced by assertions
     tests_to_run = sorted({a["test"] for a in eval_def["assertions"] if "test" in a})
     for t in tests_to_run:
@@ -399,6 +423,7 @@ def run_one(eval_def: dict, scratch_root: Path, mode: str,
         "expectations": results,
         "compile_rc": ctx["compile"]["rc"],
         "compile_duration_s": ctx["compile"]["duration_s"],
+        "compile_fix_attempts": ctx.get("compile_fix_attempts", []),
         "sim_durations_s": {t: r["duration_s"] for t, r in ctx["sim_runs"].items()},
         "duration_s": round(time.time() - t0, 2),
         "eval_outdir": _rel_or_abs(eval_outdir),
@@ -409,6 +434,82 @@ GRADER_PROMPT_PATH = ROOT / "evals" / "agents" / "grader.md"
 
 
 GENERIC_SUB_AGENT_CONTRACT = ROOT / "references" / "sub_agent_generic_scaffold.md"
+COMPILE_FIX_CONTRACT = ROOT / "references" / "sub_agent_compile_fix.md"
+
+
+def _run_compile_fix_attempt(ip_root: Path, attempt_n: int, sanity_test: str,
+                              *, generic_mode: bool, timeout: int = 240) -> dict:
+    """Spawn `claude -p` to fix one compile failure. Saves the attempt log
+    and current comp.log under work/_gen_audit/compile_fix_attempts/. Returns
+    the same shape as _run_generic_sub_agent."""
+    audit = ip_root / "work" / "_gen_audit"
+    attempts_dir = audit / "compile_fix_attempts"
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+
+    comp_log = ip_root / "work" / f"work_{sanity_test}_" / "comp.log"
+    # Snapshot the failing log to a numbered attempt artifact.
+    snapshot = attempts_dir / f"attempt_{attempt_n}.log"
+    if comp_log.exists():
+        snapshot.write_text(comp_log.read_text())
+
+    exemplars_note = ""
+    if generic_mode:
+        exemplars_note = (
+            "\n\nBecause this is generic mode, also read for pattern-matching:\n"
+            "- `references/generic_bus.md`\n"
+            "- `references/apb.md`, `references/ahb.md`, `references/axi_lite.md`\n"
+            "If a bus-agent file has structural errors (not just typos), you "
+            "may regenerate the whole file from scratch once. Record that in "
+            f"`work/_gen_audit/compile_fix_attempts/attempt_{attempt_n}.note.md`. "
+            "Never change `tb_api::write/read/expect_reg` task signatures.\n"
+        )
+
+    driver_prompt = (
+        "You are the gen-tb compile-fix sub-agent. A generated UVM testbench "
+        f"under `{ip_root}` failed to compile. Fix the root cause without "
+        "editing user RTL, user VIP source, specs, or normalized yaml inputs.\n\n"
+        f"Read your contract first: `{COMPILE_FIX_CONTRACT}`.\n\n"
+        f"Failing command: `make -f script/makefile comp SV_CASE={sanity_test}`\n"
+        f"Log: `{snapshot}` (also live at `{comp_log}`)\n\n"
+        "Inputs you may read:\n"
+        "- work/_gen_audit/intake.yaml\n"
+        "- work/_gen_audit/rtl_discovery.yaml\n"
+        "- work/_gen_audit/spec_normalized/registers.yaml (may be empty for "
+        "register_semantics: no)\n"
+        "- work/_gen_audit/bus_handshake.yaml (only when bus_protocol: generic)\n"
+        "- script/design.f, script/tb.f\n\n"
+        "Editable scope: tb/, top/, test/, script/, work/_gen_audit/.\n"
+        "Forbidden: rtl/, ref_model/, vip/, spec/; never touch intake.yaml, "
+        "rtl_discovery.yaml, bus_handshake.yaml, or "
+        "spec_normalized/registers.yaml.\n\n"
+        "Rules:\n"
+        "- Fix the first real root cause from the log; don't chase cosmetics.\n"
+        "- Do not remove tests or weaken positive checks to get a pass.\n"
+        "- Do not replace real RTL/VIP behavior with mocks.\n"
+        + exemplars_note +
+        "\nWhen done, print a brief root-cause summary and the list of files "
+        "you changed. The harness re-runs `make comp` after you return.\n"
+    )
+
+    cmd = ["claude", "-p", driver_prompt, "--output-format", "text",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep",
+           "--permission-mode", "bypassPermissions"]
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              env=env, timeout=timeout, cwd=str(ip_root))
+    except FileNotFoundError:
+        return {"ok": False, "skipped": "claude CLI not found in PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "skipped": f"compile-fix timed out after {timeout}s"}
+
+    log_tail = (proc.stdout + proc.stderr)[-3000:]
+    # Save sub-agent stdout too for forensics.
+    (attempts_dir / f"attempt_{attempt_n}.agent.log").write_text(log_tail)
+    if proc.returncode != 0:
+        return {"ok": False, "rc": proc.returncode, "log_tail": log_tail}
+    return {"ok": True, "rc": proc.returncode, "log_tail": log_tail}
 
 
 def _run_generic_sub_agent(ip_root: Path, *, timeout: int = 300) -> dict:
@@ -835,7 +936,15 @@ def cmd_run(argv: list[str]) -> int:
                          "and compile. Off by default (Claude API cost).")
     ap.add_argument("--generic-sub-agent-timeout", type=int, default=300,
                     help="seconds before the generic-mode sub-agent subprocess is killed")
+    ap.add_argument("--compile-fix-budget", type=int, default=None,
+                    help="number of compile-fix sub-agent attempts after a failing compile. "
+                         "Default: 8 when --with-generic-sub-agent is set, else 0 (no retry). "
+                         "Per design: built-in mode budget is 5, generic mode is 8.")
+    ap.add_argument("--compile-fix-timeout", type=int, default=240,
+                    help="seconds before each compile-fix sub-agent subprocess is killed")
     args = ap.parse_args(argv)
+    if args.compile_fix_budget is None:
+        args.compile_fix_budget = 8 if args.with_generic_sub_agent else 0
 
     if args.scratch.exists():
         shutil.rmtree(args.scratch)
@@ -854,11 +963,16 @@ def cmd_run(argv: list[str]) -> int:
         eval_outdir = args.out / eval_def["name"]
         r = run_one(eval_def, args.scratch, args.mode, eval_outdir,
                     with_generic_sub_agent=args.with_generic_sub_agent,
-                    generic_sub_agent_timeout=args.generic_sub_agent_timeout)
+                    generic_sub_agent_timeout=args.generic_sub_agent_timeout,
+                    compile_fix_budget=args.compile_fix_budget,
+                    compile_fix_timeout=args.compile_fix_timeout)
         if r.get("skipped"):
             print(f"     → SKIP ({r.get('skipped_reason')}) ({r['duration_s']}s)")
         else:
-            print(f"     → {'PASS' if r['passed'] else 'FAIL'} ({r['duration_s']}s)")
+            tag = "PASS" if r['passed'] else "FAIL"
+            fixes = r.get("compile_fix_attempts") or []
+            extra = f", fix-attempts={len(fixes)}" if fixes else ""
+            print(f"     → {tag} ({r['duration_s']}s{extra})")
         for e in r.get("expectations", []):
             mark = "✓" if e["passed"] else "✗"
             print(f"        {mark} {e['text']:35s} {e['evidence']}")
