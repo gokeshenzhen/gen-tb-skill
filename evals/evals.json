@@ -142,6 +142,37 @@
       ]
     },
     {
+      "id": 10,
+      "name": "generic-valid-ready-stream",
+      "fixture": "generic_valid_ready_stream",
+      "prompt": "I have a tiny valid/ready streaming master that issues one 32-bit beat 0xDEADBEEF after reset. No registers. Generate a generic-mode UVM tb skeleton; the scaffold sub-agent will fill in the responder driver/monitor/tb_api bodies.",
+      "expected_output": "Generic-mode skeleton with no RAL, valid/ready strm agent placeholders, responder_smoke_test path. Compiles clean.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_valid_ready_stream/expected/files.txt"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",    "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory", "Verdi KDB elaboration done.*0 warning"]},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
+    },
+    {
+      "id": 11,
+      "name": "generic-valid-ready-stream-with-agent",
+      "fixture": "generic_valid_ready_stream",
+      "requires_generic_sub_agent": true,
+      "prompt": "Same valid/ready streaming fixture. Sub-agent fills in slave-side responder. responder_smoke_test must observe the DUT's 0xDEADBEEF beat.",
+      "expected_output": "Sub-agent fills strm responder; responder_smoke_test observes the DUT-issued valid/ready beat.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_valid_ready_stream/expected/files.txt"},
+        {"name": "sub_agent_succeeded",    "kind": "sub_agent_exit_zero"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "responder_smoke_passes", "kind": "sim_passes",   "test": "generic_valid_ready_stream_responder_smoke_test"},
+        {"name": "observed_dut_beat",      "kind": "log_contains", "test": "generic_valid_ready_stream_responder_smoke_test", "needle": "0xdeadbeef"},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
+    },
+    {
       "id": 9,
       "name": "generic-req-ack-simple-with-agent",
       "fixture": "generic_req_ack_simple",

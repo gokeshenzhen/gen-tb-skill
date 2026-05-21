@@ -1,0 +1,23 @@
+ip_name: generic_valid_ready_stream
+ip_root: /tmp/gen-tb-dryrun-generic_valid_ready_stream-v1/generic_valid_ready_stream
+test_prefix: generic_valid_ready_stream
+
+rtl_state: found_in_place
+bus_protocol: generic
+ref_model_language: skip
+clock:
+  clk_i_freq_mhz: 100
+  clk_i_period_ns: 10
+  additional_domains: []
+reset:
+  rst_n_i_polarity: active_low
+  rst_n_i_duration_cycles: 8
+uvm_version: '1.2'
+endianness: lsb_first
+coverage:
+  enable: false
+sanity_extras: []
+
+register_semantics: 'no'
+
+simulator: vcs

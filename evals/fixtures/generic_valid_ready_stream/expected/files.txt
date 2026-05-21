@@ -1,0 +1,28 @@
+# gen-tb expected output for generic_valid_ready_stream fixture.
+# register_semantics: no → no RAL, no reg_access_test.
+# direction: master → responder_smoke_test path.
+
+.prj_top                                          exists
+script/makefile                                   nonempty
+script/setup.sh                                   nonempty
+script/check_env.sh                               nonempty
+script/design.f                                   nonempty
+script/tb.f                                       nonempty
+top/generic_valid_ready_stream_tb_top.sv          nonempty
+tb/strm_if.sv                                     nonempty
+tb/strm_agt_top/strm_agt_pkg.sv                   nonempty
+tb/strm_agt_top/strm_agent.sv                     nonempty
+tb/strm_agt_top/strm_driver.sv                    nonempty
+tb/strm_agt_top/strm_monitor.sv                   nonempty
+tb/strm_agt_top/strm_sequencer.sv                 nonempty
+tb/strm_agt_top/strm_sequence.sv                  nonempty
+tb/strm_agt_top/strm_trans.sv                     nonempty
+tb/strm_agt_top/strm_agt_config.sv                nonempty
+tb/tb_api/tb_api_pkg.sv                           nonempty
+tb/tb_api/tb_api_primitives.svh                   nonempty
+test/generic_valid_ready_stream_pkg.sv            nonempty
+test/sv_list                                      nonempty
+work                                              dir
+work/_gen_audit                                   dir
+work/_gen_audit/bus_handshake.yaml                nonempty
+work/_gen_audit/generic_bus_scaffold_prompt.md    nonempty

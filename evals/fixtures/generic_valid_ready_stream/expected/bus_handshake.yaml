@@ -1,0 +1,26 @@
+bus_name: strm
+direction: master
+clock:
+  name: clk_i
+  freq_mhz: 100
+reset:
+  name: rst_n_i
+  polarity: low
+  cycles: 8
+addr: null
+data:
+  write_port: tdata_o
+  read_port: tdata_o
+  width: 32
+handshake:
+  kind: valid_ready
+  req: tvalid_o
+  ack: tready_i
+  extra: [tlast_o]
+burst: none
+register_semantics: 'no'
+notes: |
+  AXI-Stream-shaped valid/ready handshake. The DUT is the master; the
+  TB-side slave responder must sample (tvalid_o && tready_i) and may
+  hold tready_i low to back-pressure. tlast_o is a packet boundary
+  marker carried alongside payload.

@@ -50,7 +50,7 @@ not a golden implementation.
 ## Current Configuration
 
 - IP: `<ip>`
-- Bus: `<APB slave | AHB-Lite slave | AHB-Lite master | AXI4-Lite slave | AXI4-Lite master>`
+- Bus: `<APB slave | AHB-Lite slave | AHB-Lite master | AXI4-Lite slave | AXI4-Lite master | generic (<bus_name>, <direction>, handshake.kind=<kind>)>`
 - Simulator: VCS
 - UVM: `<uvm_version>`
 - Bus VIP source: `<generate_fresh | reuse_my_vip>`
@@ -81,6 +81,14 @@ responder smoke instead of `reg_access` (no RAL):
 make all SV_CASE=<ip>_responder_smoke_test
 ```
 
+For `bus_protocol: generic`, the same `<ip>_sanity_test` (slave +
+register_semantics: yes) or `<ip>_responder_smoke_test` (master, or
+register_semantics: no) applies. The driver/monitor/`tb_api` bodies
+were filled in by the gen-tb scaffold sub-agent (see
+`references/sub_agent_generic_scaffold.md`); the protocol details
+were taken from `work/_gen_audit/bus_handshake.yaml`. Read the
+**Generic-mode review checklist** below before relying on the tb.
+
 ## Important Files
 
 - `work/_gen_audit/intake.yaml`
@@ -92,6 +100,12 @@ make all SV_CASE=<ip>_responder_smoke_test
 - `work/_gen_audit/sanity_result.json`
 - `work/_gen_audit/unresolved.md`
 
+Generic-mode runs also have:
+
+- `work/_gen_audit/bus_handshake.yaml` — handshake spec (authoritative)
+- `work/_gen_audit/generic_bus_scaffold_prompt.md` — prompt + sub-agent assumption list
+- `work/_gen_audit/generic_bus_scaffold_diff.patch` — diff of sub-agent edits against the placeholder skeleton
+
 ## Rules For Future Agents
 
 - Do not edit user RTL, user VIP source, specs, or user reference-model
@@ -102,6 +116,33 @@ make all SV_CASE=<ip>_responder_smoke_test
 - Treat register-level expected behavior as RAL/reg-block behavior.
 - For external VIP reuse, generate project-local glue instead of
   patching the VIP source.
+
+## Generic-mode review checklist
+
+> **Only present when `bus_protocol: generic`.** Copy verbatim from
+> the block at the bottom of `references/generic_bus.md`. The skill
+> cannot verify protocol correctness it was never taught — this
+> checklist is the explicit hand-off to the human reviewer. Phase 7
+> MUST include this block in generic-mode `CLAUDE.md`; on built-in
+> bus runs, omit the section entirely.
+
+```
+## Generic-mode review checklist
+This testbench was generated in generic-bus mode. The skill cannot
+verify protocol correctness it was never taught. Before relying on
+this tb, review:
+
+- [ ] Driver setup/hold against spec (especially req_ack and strobe
+      modes — verify data is stable on the sampling cycle).
+- [ ] Monitor sample timing matches the spec's data-valid window.
+- [ ] Reset deassert cycle count matches DUT expectation.
+- [ ] tb_api::write/read behavior on back-to-back transactions.
+- [ ] If register_semantics: yes — spot-check 1–2 RW registers have
+      correct addr / width / reset wired through RAL.
+- [ ] Read the assumption list in
+      work/_gen_audit/generic_bus_scaffold_prompt.md — each entry is
+      a place the sub-agent picked the narrower interpretation.
+```
 
 ## Known Limitations
 
@@ -127,6 +168,8 @@ The generated file must mention:
 - reference-model mode/trust when present
 - RTL stub warning when `rtl_state: generated_stub`
 - unresolved items and where to find logs
+- **Generic-mode review checklist** when `bus_protocol: generic`
+  (copy verbatim from the block above; do not paraphrase)
 
 ## Concision
 

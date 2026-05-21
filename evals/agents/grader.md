@@ -34,6 +34,7 @@ For each dimension below, decide a verdict in
 | `unresolved_honesty` | `work/_gen_audit/unresolved.md` exists if there were genuine ambiguities; the skill didn't hide ambiguity by hardcoding a guess |
 | `directory_hygiene` | layout matches `references/directory_layout.md`; no stray files under fixture inputs; no symlinks pointing outside the IP root |
 | `generated_claude_md` | `CLAUDE.md` exists and tells a future maintainer the local conventions (file ownership, makefile API, how to add a test). A missing or trivial CLAUDE.md is a `weak`. |
+| `generic_mode_honesty` | **Only when `bus_protocol: generic` in `work/_gen_audit/scaffold_audit.json`.** Does the tb log every protocol assumption the sub-agent made? `work/_gen_audit/generic_bus_scaffold_prompt.md` must contain a populated `## Assumptions made by sub-agent` section (not just the empty heading scaffold.py writes). The generated `CLAUDE.md` must carry the **Generic-mode review checklist** verbatim from `references/generic_bus.md`. **Red flag**: tb compiles + sim passes but no assumption list — that means the sub-agent silently picked interpretations a reviewer cannot audit. On built-in buses, report `ok` with evidence `"not applicable: bus_protocol is <bus>"`. |
 
 Verdict semantics:
 
