@@ -1,0 +1,17 @@
+version: 1
+ip_name: generic_near_apb_renamed
+addr_width: 12
+data_width: 32
+registers:
+  - name: ID
+    offset: 0x0
+    width: 32
+    access: RO
+    reset: 0x000000C3
+    fields: []
+  - name: SCRATCH
+    offset: 0x4
+    width: 32
+    access: RW
+    reset: 0x00000000
+    fields: []

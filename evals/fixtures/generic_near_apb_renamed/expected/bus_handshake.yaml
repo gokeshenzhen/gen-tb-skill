@@ -1,0 +1,28 @@
+bus_name: regb
+direction: slave
+clock:
+  name: bus_clk
+  freq_mhz: 100
+reset:
+  name: bus_rst_n
+  polarity: low
+  cycles: 8
+addr:
+  port: bus_addr
+  width: 12
+data:
+  write_port: bus_wdata
+  read_port: bus_rdata
+  width: 32
+handshake:
+  kind: req_ack
+  req: bus_en
+  ack: bus_rdy
+  extra: [bus_sel, bus_we]
+burst: none
+register_semantics: 'yes'
+notes: |
+  APB-shaped two-phase access under vendor naming. The TB master must
+  raise bus_sel and bus_en together for one cycle, then watch bus_rdy
+  go high one cycle later with bus_rdata valid on reads. bus_we
+  selects read vs write. Single-beat only.

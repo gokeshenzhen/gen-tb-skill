@@ -1,0 +1,23 @@
+ip_name: generic_near_apb_renamed
+ip_root: /tmp/gen-tb-dryrun-generic_near_apb_renamed-v1/generic_near_apb_renamed
+test_prefix: generic_near_apb_renamed
+
+rtl_state: found_in_place
+bus_protocol: generic
+ref_model_language: skip
+clock:
+  bus_clk_freq_mhz: 100
+  bus_clk_period_ns: 10
+  additional_domains: []
+reset:
+  bus_rst_n_polarity: active_low
+  bus_rst_n_duration_cycles: 8
+uvm_version: '1.2'
+endianness: lsb_first
+coverage:
+  enable: false
+sanity_extras: []
+
+register_semantics: 'yes'
+
+simulator: vcs

@@ -1,0 +1,29 @@
+# gen-tb expected output for generic_near_apb_renamed fixture.
+# register_semantics: yes, slave direction → RAL + reg_access_test.
+
+.prj_top                                          exists
+script/makefile                                   nonempty
+script/setup.sh                                   nonempty
+script/check_env.sh                               nonempty
+script/design.f                                   nonempty
+script/tb.f                                       nonempty
+top/generic_near_apb_renamed_tb_top.sv            nonempty
+tb/regb_if.sv                                     nonempty
+tb/regb_agt_top/regb_agt_pkg.sv                   nonempty
+tb/regb_agt_top/regb_agent.sv                     nonempty
+tb/regb_agt_top/regb_driver.sv                    nonempty
+tb/regb_agt_top/regb_monitor.sv                   nonempty
+tb/regb_agt_top/regb_sequencer.sv                 nonempty
+tb/regb_agt_top/regb_sequence.sv                  nonempty
+tb/regb_agt_top/regb_trans.sv                     nonempty
+tb/regb_agt_top/regb_agt_config.sv                nonempty
+tb/tb_api/tb_api_pkg.sv                           nonempty
+tb/tb_api/tb_api_primitives.svh                   nonempty
+tb/ral/generic_near_apb_renamed_reg_block.sv      nonempty
+tb/ral/generic_near_apb_renamed_regb_adapter.sv   nonempty
+test/generic_near_apb_renamed_pkg.sv              nonempty
+test/sv_list                                      nonempty
+work                                              dir
+work/_gen_audit                                   dir
+work/_gen_audit/bus_handshake.yaml                nonempty
+work/_gen_audit/generic_bus_scaffold_prompt.md    nonempty

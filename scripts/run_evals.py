@@ -561,6 +561,10 @@ def _run_generic_sub_agent(ip_root: Path, *, timeout: int = 300) -> dict:
         return {"ok": False, "skipped": f"sub-agent timed out after {timeout}s"}
 
     log_tail = (proc.stdout + proc.stderr)[-3000:]
+    # Persist full stdout/stderr for forensics regardless of exit code.
+    (ip_root / "work" / "_gen_audit" / "generic_bus_sub_agent.log").write_text(
+        proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")
+    )
     if proc.returncode != 0:
         return {"ok": False, "rc": proc.returncode, "log_tail": log_tail}
     return {"ok": True, "rc": proc.returncode, "log_tail": log_tail}

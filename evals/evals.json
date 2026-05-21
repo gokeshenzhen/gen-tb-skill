@@ -173,6 +173,38 @@
       ]
     },
     {
+      "id": 12,
+      "name": "generic-near-apb-renamed",
+      "fixture": "generic_near_apb_renamed",
+      "prompt": "I have a register slave with APB-shaped semantics but vendor-renamed ports (bus_sel/bus_en/bus_we/bus_addr/bus_wdata/bus_rdata/bus_rdy). Single-beat req/ack. Two registers (ID=0xC3 RO, SCRATCH RW). Generate a generic-mode UVM tb; the scaffold sub-agent will fill in the protocol bodies.",
+      "expected_output": "Generic-mode skeleton named regb_*, RAL backing the two registers, compile clean.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_near_apb_renamed/expected/files.txt"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",    "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory", "Verdi KDB elaboration done.*0 warning"]},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
+    },
+    {
+      "id": 13,
+      "name": "generic-near-apb-renamed-with-agent",
+      "fixture": "generic_near_apb_renamed",
+      "requires_generic_sub_agent": true,
+      "prompt": "Same renamed-APB fixture. Sub-agent fills in driver/monitor/tb_api bodies; sanity_test reads ID=0xC3 and reg_access_test exercises both registers via RAL.",
+      "expected_output": "Sub-agent rewrites regb bodies; sanity reads 0xC3; reg_access runs.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_near_apb_renamed/expected/files.txt"},
+        {"name": "sub_agent_succeeded",    "kind": "sub_agent_exit_zero"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "sanity_passes",          "kind": "sim_passes",   "test": "generic_near_apb_renamed_sanity_test"},
+        {"name": "reads_id_register",      "kind": "log_contains", "test": "generic_near_apb_renamed_sanity_test", "needle": "= 0x000000c3"},
+        {"name": "reg_access_runs",        "kind": "sim_passes",   "test": "generic_near_apb_renamed_reg_access_test"},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
+    },
+    {
       "id": 9,
       "name": "generic-req-ack-simple-with-agent",
       "fixture": "generic_req_ack_simple",
