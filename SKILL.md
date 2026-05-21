@@ -505,6 +505,17 @@ analyzer}.md`. They are written so the same contracts can be invoked
 by the harness (`claude -p`) or by a conversational Claude via the
 Task tool — pick whichever fits the iteration loop.
 
+**Generic-mode sub-agent gate.** Evals tagged
+`requires_generic_sub_agent: true` invoke the scaffold sub-agent
+(`references/sub_agent_generic_scaffold.md`) between scaffold and
+compile, via a constrained `claude -p` subprocess. This is off by
+default — it costs Claude API tokens per run and is non-deterministic.
+Enable with `--with-generic-sub-agent` (or env var
+`GENTB_EVAL_GENERIC_SUB_AGENT=1`) when iterating on the generic-bus
+scaffold contract or before promoting a generic bus to first-class.
+If the `claude` CLI is unavailable, the eval is reported as `SKIP`
+rather than failed.
+
 ## Done Checklist
 
 Items marked *(conditional)* depend on the configuration; only the

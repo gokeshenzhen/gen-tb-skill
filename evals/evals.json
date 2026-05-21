@@ -140,6 +140,24 @@
         {"name": "no_compile_warnings",    "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory", "Verdi KDB elaboration done.*0 warning"]},
         {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
       ]
+    },
+    {
+      "id": 9,
+      "name": "generic-req-ack-simple-with-agent",
+      "fixture": "generic_req_ack_simple",
+      "requires_generic_sub_agent": true,
+      "prompt": "Same fixture as generic-req-ack-simple. The scaffold sub-agent fills in the placeholder bodies, then sanity_test must read ID=0xA5 from the DUT.",
+      "expected_output": "Sub-agent rewrites driver/monitor/tb_api bodies; sanity_test reads 0xA5 via the generated gbus agent; reg_access_test runs to completion.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_req_ack_simple/expected/files.txt"},
+        {"name": "sub_agent_succeeded",    "kind": "sub_agent_exit_zero"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "sanity_passes",          "kind": "sim_passes",   "test": "generic_req_ack_simple_sanity_test"},
+        {"name": "reads_id_register",      "kind": "log_contains", "test": "generic_req_ack_simple_sanity_test", "needle": "= 0x000000a5"},
+        {"name": "reg_access_runs",        "kind": "sim_passes",   "test": "generic_req_ack_simple_reg_access_test"},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
     }
   ]
 }

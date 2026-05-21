@@ -173,6 +173,15 @@ def _check_assertion(a: dict, ctx: dict) -> tuple[bool, str]:
         rc = ctx["compile"]["rc"]
         return rc == 0, f"make comp rc={rc}"
 
+    if kind == "sub_agent_exit_zero":
+        sub = ctx.get("sub_agent")
+        if sub is None:
+            return False, "sub-agent not invoked"
+        if "skipped" in sub:
+            return False, f"sub-agent skipped: {sub['skipped']}"
+        rc = sub.get("rc", 1)
+        return rc == 0, f"sub-agent rc={rc}"
+
     if kind == "compile_no_warnings":
         log = read_log(ip_root, ctx["sanity_test"], "comp")
         ignore = a.get("ignore_patterns", [])
@@ -287,7 +296,8 @@ def _write_transcript(eval_def: dict, ctx: dict, scaffold_log: str,
 
 
 def run_one(eval_def: dict, scratch_root: Path, mode: str,
-             eval_outdir: Path) -> dict:
+             eval_outdir: Path, *, with_generic_sub_agent: bool = False,
+             generic_sub_agent_timeout: int = 300) -> dict:
     t0 = time.time()
     fixture_dir = FIXTURES / eval_def["fixture"]
     ctx = {
@@ -320,6 +330,35 @@ def run_one(eval_def: dict, scratch_root: Path, mode: str,
 
     # 2. Identify the sanity test name (best-effort)
     ctx["sanity_test"] = f"{eval_def['fixture']}_sanity_test"
+
+    # 2a. Generic-mode scaffold sub-agent (gated)
+    if mode == "with-skill" and eval_def.get("requires_generic_sub_agent"):
+        if not with_generic_sub_agent:
+            # Caller-level skip already filters these; defensive no-op.
+            return {
+                "id": eval_def["id"], "name": eval_def["name"], "mode": mode,
+                "passed": True, "skipped": True,
+                "skipped_reason": "requires_generic_sub_agent but flag not set",
+                "duration_s": round(time.time() - t0, 2),
+            }
+        sub = _run_generic_sub_agent(ip_root, timeout=generic_sub_agent_timeout)
+        ctx["sub_agent"] = sub
+        if not sub["ok"] and "skipped" in sub:
+            # Environmental skip — don't mark eval failed.
+            _snapshot_outputs(ip_root, eval_outdir / "outputs")
+            _write_transcript(eval_def, ctx, scaffold_log, eval_outdir, mode)
+            (eval_outdir / "assertions_result.json").write_text(json.dumps({
+                "passed": True, "skipped": True,
+                "skipped_reason": sub.get("skipped"),
+                "expectations": [],
+            }, indent=2))
+            return {
+                "id": eval_def["id"], "name": eval_def["name"], "mode": mode,
+                "passed": True, "skipped": True,
+                "skipped_reason": sub.get("skipped"),
+                "stage": "sub_agent_skipped",
+                "duration_s": round(time.time() - t0, 2),
+            }
 
     # 3. Compile
     ctx["compile"] = run_make(ip_root, "comp", ctx["sanity_test"])
@@ -367,6 +406,63 @@ def run_one(eval_def: dict, scratch_root: Path, mode: str,
 
 
 GRADER_PROMPT_PATH = ROOT / "evals" / "agents" / "grader.md"
+
+
+GENERIC_SUB_AGENT_CONTRACT = ROOT / "references" / "sub_agent_generic_scaffold.md"
+
+
+def _run_generic_sub_agent(ip_root: Path, *, timeout: int = 300) -> dict:
+    """Spawn `claude -p` to run the generic-mode scaffold sub-agent against
+    a placeholder skeleton produced by scaffold.py. Returns:
+      {"ok": True,  "rc": int, "log_tail": str}  -- agent ran and exited 0
+      {"ok": False, "rc": int, "log_tail": str}  -- agent ran but failed
+      {"ok": False, "skipped": str, ...}         -- environmental skip
+    """
+    contract_path = GENERIC_SUB_AGENT_CONTRACT
+    prompt_path = ip_root / "work" / "_gen_audit" / "generic_bus_scaffold_prompt.md"
+    if not prompt_path.exists():
+        return {"ok": False, "skipped":
+                "generic_bus_scaffold_prompt.md missing — scaffold did not run in generic mode"}
+
+    driver_prompt = (
+        "You are the gen-tb scaffold sub-agent for a generic-mode UVM "
+        "testbench. Your workspace is the current working directory "
+        f"(`{ip_root}`). \n\n"
+        "Read these files in order and follow them:\n"
+        f"1. `{contract_path}` — your contract; read it first.\n"
+        f"2. `{prompt_path}` — per-run inputs and assumption log.\n"
+        "3. The three exemplars listed in the contract "
+        "(`references/apb.md`, `references/ahb.md`, `references/axi_lite.md`) "
+        "and `references/generic_bus.md`.\n"
+        f"4. `work/_gen_audit/bus_handshake.yaml` and "
+        f"`work/_gen_audit/rtl_discovery.yaml` for the per-IP details.\n\n"
+        "Then edit the placeholder files under `tb/` so the bus described in "
+        "`bus_handshake.yaml` is actually driven and sampled. Do NOT compile "
+        "or simulate — the harness handles that. Stay within the editable "
+        "scope defined in the contract (`tb/`, `top/`, `test/`, `script/`, "
+        "`work/_gen_audit/`).\n\n"
+        "When done, append your assumption list to "
+        f"`{prompt_path}` under the existing `## Assumptions made by sub-agent` "
+        "heading, and print a one-line summary of what you changed.\n"
+    )
+
+    cmd = ["claude", "-p", driver_prompt, "--output-format", "text",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep",
+           "--permission-mode", "bypassPermissions"]
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              env=env, timeout=timeout, cwd=str(ip_root))
+    except FileNotFoundError:
+        return {"ok": False, "skipped": "claude CLI not found in PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "skipped": f"sub-agent timed out after {timeout}s"}
+
+    log_tail = (proc.stdout + proc.stderr)[-3000:]
+    if proc.returncode != 0:
+        return {"ok": False, "rc": proc.returncode, "log_tail": log_tail}
+    return {"ok": True, "rc": proc.returncode, "log_tail": log_tail}
 
 
 def grade_one(eval_def: dict, eval_outdir: Path, *,
@@ -732,6 +828,13 @@ def cmd_run(argv: list[str]) -> int:
                     help="model passed to `claude -p` for the grader (default: user's configured model)")
     ap.add_argument("--grader-timeout", type=int, default=600,
                     help="seconds before the grader subprocess is killed (default: 600)")
+    ap.add_argument("--with-generic-sub-agent", action="store_true",
+                    default=bool(os.environ.get("GENTB_EVAL_GENERIC_SUB_AGENT")),
+                    help="for evals with requires_generic_sub_agent: true, spawn "
+                         "`claude -p` to run the scaffold sub-agent between scaffold "
+                         "and compile. Off by default (Claude API cost).")
+    ap.add_argument("--generic-sub-agent-timeout", type=int, default=300,
+                    help="seconds before the generic-mode sub-agent subprocess is killed")
     args = ap.parse_args(argv)
 
     if args.scratch.exists():
@@ -744,10 +847,18 @@ def cmd_run(argv: list[str]) -> int:
     for eval_def in spec["evals"]:
         if args.filter and eval_def["name"] != args.filter:
             continue
+        if eval_def.get("requires_generic_sub_agent") and not args.with_generic_sub_agent:
+            print(f"  [skip] {eval_def['name']} (requires --with-generic-sub-agent)")
+            continue
         print(f"  [run] {eval_def['name']} ({args.mode})")
         eval_outdir = args.out / eval_def["name"]
-        r = run_one(eval_def, args.scratch, args.mode, eval_outdir)
-        print(f"     → {'PASS' if r['passed'] else 'FAIL'} ({r['duration_s']}s)")
+        r = run_one(eval_def, args.scratch, args.mode, eval_outdir,
+                    with_generic_sub_agent=args.with_generic_sub_agent,
+                    generic_sub_agent_timeout=args.generic_sub_agent_timeout)
+        if r.get("skipped"):
+            print(f"     → SKIP ({r.get('skipped_reason')}) ({r['duration_s']}s)")
+        else:
+            print(f"     → {'PASS' if r['passed'] else 'FAIL'} ({r['duration_s']}s)")
         for e in r.get("expectations", []):
             mark = "✓" if e["passed"] else "✗"
             print(f"        {mark} {e['text']:35s} {e['evidence']}")
