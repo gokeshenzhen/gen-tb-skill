@@ -126,6 +126,20 @@
         {"name": "reg_access_runs",          "kind": "sim_passes",     "test": "uart16550_reg_access_test"},
         {"name": "no_fixture_pollution",     "kind": "fixture_unchanged"}
       ]
+    },
+    {
+      "id": 8,
+      "name": "generic-req-ack-simple",
+      "fixture": "generic_req_ack_simple",
+      "prompt": "I have a tiny custom register bus that uses a Wishbone-classic-shaped req/ack handshake (stb_i + cyc_i + ack_o). Single beat, one read-only ID register at offset 0 returning 0xA5. Generate a generic-mode UVM tb skeleton; the scaffold sub-agent will fill in the protocol bodies.",
+      "expected_output": "A generic-mode UVM tb skeleton: placeholder gbus agent + tb_api + RAL adapter that compile clean. The generic_bus_scaffold_prompt.md audit artifact is produced for the sub-agent.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/generic_req_ack_simple/expected/files.txt"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",    "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory", "Verdi KDB elaboration done.*0 warning"]},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
     }
   ]
 }

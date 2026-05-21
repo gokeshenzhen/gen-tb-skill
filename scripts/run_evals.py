@@ -115,6 +115,13 @@ def _emit_audit_inputs(eval_def: dict, ip_root: Path):
     direction = dir_match.group(1) if dir_match else "slave"
     emit_rtl_discovery(ip_root, name, audit / "rtl_discovery.yaml", bus=bus, direction=direction)
 
+    # Generic mode: copy pre-baked bus_handshake.yaml into audit dir.
+    if bus == "generic":
+        prebaked_hs = expected / "bus_handshake.yaml"
+        if not prebaked_hs.exists():
+            sys.exit(f"FATAL: fixture {name} is bus_protocol: generic but missing expected/bus_handshake.yaml")
+        (audit / "bus_handshake.yaml").write_text(prebaked_hs.read_text())
+
     # registers.yaml — parse from the fixture xlsx, or copy a pre-baked one,
     # or fall back to an empty register set when the fixture has no registers.
     xlsx_candidates = list((fixture_root / "spec").glob("*_regs.xlsx"))

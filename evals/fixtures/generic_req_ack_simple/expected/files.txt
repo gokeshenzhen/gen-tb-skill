@@ -1,0 +1,31 @@
+# gen-tb expected output for generic_req_ack_simple fixture.
+# This is the placeholder skeleton scaffold.py emits; the scaffold
+# sub-agent (not run by this eval) fills in driver/monitor/tb_api
+# bodies.
+
+.prj_top                                          exists
+script/makefile                                   nonempty
+script/setup.sh                                   nonempty
+script/check_env.sh                               nonempty
+script/design.f                                   nonempty
+script/tb.f                                       nonempty
+top/generic_req_ack_simple_tb_top.sv              nonempty
+tb/gbus_if.sv                                     nonempty
+tb/gbus_agt_top/gbus_agt_pkg.sv                   nonempty
+tb/gbus_agt_top/gbus_agent.sv                     nonempty
+tb/gbus_agt_top/gbus_driver.sv                    nonempty
+tb/gbus_agt_top/gbus_monitor.sv                   nonempty
+tb/gbus_agt_top/gbus_sequencer.sv                 nonempty
+tb/gbus_agt_top/gbus_sequence.sv                  nonempty
+tb/gbus_agt_top/gbus_trans.sv                     nonempty
+tb/gbus_agt_top/gbus_agt_config.sv                nonempty
+tb/tb_api/tb_api_pkg.sv                           nonempty
+tb/tb_api/tb_api_primitives.svh                   nonempty
+tb/ral/generic_req_ack_simple_reg_block.sv        nonempty
+tb/ral/generic_req_ack_simple_gbus_adapter.sv     nonempty
+test/generic_req_ack_simple_pkg.sv                nonempty
+test/sv_list                                      nonempty
+work                                              dir
+work/_gen_audit                                   dir
+work/_gen_audit/bus_handshake.yaml                nonempty
+work/_gen_audit/generic_bus_scaffold_prompt.md    nonempty

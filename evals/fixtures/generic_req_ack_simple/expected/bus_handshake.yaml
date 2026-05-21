@@ -1,0 +1,27 @@
+bus_name: gbus
+direction: slave
+clock:
+  name: clk_i
+  freq_mhz: 100
+reset:
+  name: rst_i
+  polarity: high
+  cycles: 8
+addr:
+  port: adr_i
+  width: 12
+data:
+  write_port: dat_i
+  read_port: dat_o
+  width: 32
+handshake:
+  kind: req_ack
+  req: stb_i
+  ack: ack_o
+  extra: [we_i, cyc_i]
+burst: none
+register_semantics: 'yes'
+notes: |
+  Wishbone-classic-shaped single-cycle handshake. stb_i + cyc_i must be
+  asserted together; ack_o pulses one cycle later with dat_o valid on
+  reads.

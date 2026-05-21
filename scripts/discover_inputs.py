@@ -77,6 +77,16 @@ def render_rtl_discovery(
         role = "top" if path.stem == top else "leaf"
         lines.append(f"  - {{path: $PROJ_DIR/rtl/{path.name}, role: {role}, order: {i}}}")
 
+    if bus == "generic":
+        # No standard interface section — bus details live in bus_handshake.yaml.
+        # rtl_discovery still records the module + files so design.f and tb_top
+        # have the DUT port info they need.
+        lines += [
+            "generic_interface:",
+            "  note: ports described in work/_gen_audit/bus_handshake.yaml",
+            *_default_other_pads(ip_name),
+        ]
+        return "\n".join(lines) + "\n"
     if bus == "axi_lite":
         lines += [
             "axi_lite_interface:",
@@ -157,7 +167,7 @@ def main() -> int:
     ap.add_argument("--ip-root", required=True, type=Path)
     ap.add_argument("--ip-name", required=True)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--bus", choices=["apb", "ahb", "axi_lite"], default="apb")
+    ap.add_argument("--bus", choices=["apb", "ahb", "axi_lite", "generic"], default="apb")
     ap.add_argument("--direction", choices=["slave", "master"], default="slave")
     args = ap.parse_args()
     emit_rtl_discovery(args.ip_root, args.ip_name, args.out, args.bus, args.direction)
