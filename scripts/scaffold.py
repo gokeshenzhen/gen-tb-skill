@@ -670,8 +670,48 @@ def emit_ahb_if() -> str:
         """)
 
 
-def emit_axi_lite_if() -> str:
-    return textwrap.dedent("""\
+def emit_axi_lite_if(axi_full_signature: bool = False, id_w: int = 1) -> str:
+    """Emit the AXI4-Lite interface. When `axi_full_signature` is true (the
+    user told us the DUT exposes full-AXI signals but only uses single-beat
+    transfers — see SKILL.md Phase 2 mandatory question), include the extra
+    burst/ID ports that the DUT will drive, so tb_top can wire them cleanly.
+    The monitor adds a runtime assertion that AWLEN == 0 && ARLEN == 0."""
+    extra = ""
+    if axi_full_signature:
+        extra_lines = [
+            "// Full-AXI signature ports — DUT exposes these; TB master ties them",
+            "// to single-beat values. The concurrent assertions below trap any",
+            "// burst the DUT issues despite single-beat-only configuration.",
+            "logic [7:0]            awlen;",
+            "logic [2:0]            awsize;",
+            "logic [1:0]            awburst;",
+            f"logic [{id_w-1}:0]     awid;",
+            "logic [7:0]            arlen;",
+            "logic [2:0]            arsize;",
+            "logic [1:0]            arburst;",
+            f"logic [{id_w-1}:0]     arid;",
+            f"logic [{id_w-1}:0]     bid;",
+            f"logic [{id_w-1}:0]     rid;",
+            "logic                  rlast;",
+            "logic                  wlast;",
+            "",
+            "// AXI4-full degraded-mode guard (axi_full_signature: true).",
+            "// Fail loud at sim time if the DUT issues a real burst.",
+            "property p_awlen_zero;",
+            "    @(posedge aclk) disable iff (!aresetn)",
+            "        (awvalid && awready) |-> (awlen == 8'h00);",
+            "endproperty",
+            "property p_arlen_zero;",
+            "    @(posedge aclk) disable iff (!aresetn)",
+            "        (arvalid && arready) |-> (arlen == 8'h00);",
+            "endproperty",
+            'a_awlen_zero: assert property (p_awlen_zero)',
+            '    else $fatal(1, "AXI_FULL_DEGRADED: DUT issued AWLEN > 0 but TB is AXI4-Lite single-beat mode");',
+            'a_arlen_zero: assert property (p_arlen_zero)',
+            '    else $fatal(1, "AXI_FULL_DEGRADED: DUT issued ARLEN > 0 but TB is AXI4-Lite single-beat mode");',
+        ]
+        extra = "\n" + "\n".join("            " + ln if ln else "" for ln in extra_lines)
+    return textwrap.dedent(f"""\
         `ifndef AXI_LITE_IF_SV
         `define AXI_LITE_IF_SV
         interface axi_lite_if #(int ADDR_W = 12, int DATA_W = 32) (
@@ -697,13 +737,14 @@ def emit_axi_lite_if() -> str:
             logic              rvalid;
             logic              rready;
             logic [DATA_W-1:0] rdata;
-            logic [1:0]        rresp;
+            logic [1:0]        rresp;{extra}
         endinterface
         `endif
         """)
 
 
-def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None) -> str:
+def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
+                 axi_full_signature: bool = False) -> str:
     ip = intake["ip_name"]
     bus = _bus(intake)
     top = rtl["top_module"]["name"]
@@ -785,7 +826,17 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None) -> str:
             tb_api::set_vif({prefix}_bus);""").rstrip()
     else:  # axi_lite
         bus_inst = f"axi_lite_if #(.ADDR_W({addr_w}), .DATA_W(32)) axi (.aclk(aclk), .aresetn(aresetn));"
-        dut_bus = textwrap.dedent("""\
+        axi_full_extra = ""
+        if axi_full_signature:
+            axi_full_extra = (
+                ",\n            .awlen   (axi.awlen),   .awsize (axi.awsize)"
+                ",\n            .awburst (axi.awburst), .awid   (axi.awid)"
+                ",\n            .arlen   (axi.arlen),   .arsize (axi.arsize)"
+                ",\n            .arburst (axi.arburst), .arid   (axi.arid)"
+                ",\n            .bid     (axi.bid),     .rid    (axi.rid)"
+                ",\n            .wlast   (axi.wlast),   .rlast  (axi.rlast)"
+            )
+        dut_bus = textwrap.dedent(f"""\
             .aclk    (aclk),       .aresetn(aresetn),
             .awvalid (axi.awvalid), .awready(axi.awready),
             .awaddr  (axi.awaddr),  .awprot (axi.awprot),
@@ -796,7 +847,7 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None) -> str:
             .arvalid (axi.arvalid), .arready(axi.arready),
             .araddr  (axi.araddr),  .arprot (axi.arprot),
             .rvalid  (axi.rvalid),  .rready (axi.rready),
-            .rdata   (axi.rdata),   .rresp  (axi.rresp)""").rstrip()
+            .rdata   (axi.rdata),   .rresp  (axi.rresp){axi_full_extra}""").rstrip()
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "axi_lite_vif", axi);
             tb_api::set_vif(axi);""").rstrip()
@@ -873,12 +924,13 @@ def emit_tb_api_pkg(bus: str, addr_w: int, data_w: int = 32, handshake: dict | N
         """)
 
 
-def emit_tb_api_primitives(bus: str, direction: str = "slave", handshake: dict | None = None) -> str:
+def emit_tb_api_primitives(bus: str, direction: str = "slave", handshake: dict | None = None,
+                            axi_full_signature: bool = False) -> str:
     if bus == "generic":
         assert handshake is not None
         return _emit_generic_tb_api_primitives(handshake)
     if bus == "axi_lite":
-        return _emit_axi_lite_tb_api_primitives(direction)
+        return _emit_axi_lite_tb_api_primitives(direction, axi_full_signature)
     if bus == "ahb" and direction == "master":
         return _emit_ahb_master_tb_api_primitives()
     if bus == "ahb":
@@ -1087,7 +1139,7 @@ def emit_tb_api_primitives(bus: str, direction: str = "slave", handshake: dict |
         """)
 
 
-def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
+def _emit_axi_lite_tb_api_primitives(direction: str, axi_full_signature: bool = False) -> str:
     if direction == "master":
         # DUT is master; tb_api drives the slave responder helpers.
         return textwrap.dedent("""\
@@ -1165,7 +1217,37 @@ def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
             """)
 
     # DUT-as-slave: TB master BFM (AXI4-Lite write/read primitives).
-    return textwrap.dedent("""\
+    # In degraded-mode (axi_full_signature: true), the TB master must tie
+    # AWLEN/ARLEN/AWBURST/ARBURST/AWID/ARID to zero on every transaction
+    # so the DUT cannot mistake the access for a burst.
+    full_axi_w_tieoffs = textwrap.dedent("""\
+        vif.awlen   <= 8'h00;
+        vif.awsize  <= 3'b010;
+        vif.awburst <= 2'b01;
+        vif.awid    <= '0;
+        vif.wlast   <= 1'b1;""") if axi_full_signature else ""
+    full_axi_r_tieoffs = textwrap.dedent("""\
+        vif.arlen   <= 8'h00;
+        vif.arsize  <= 3'b010;
+        vif.arburst <= 2'b01;
+        vif.arid    <= '0;""") if axi_full_signature else ""
+    full_axi_idle = textwrap.dedent("""\
+        vif.awlen   <= 8'h00;
+        vif.awsize  <= 3'b010;
+        vif.awburst <= 2'b01;
+        vif.awid    <= '0;
+        vif.wlast   <= 1'b0;
+        vif.arlen   <= 8'h00;
+        vif.arsize  <= 3'b010;
+        vif.arburst <= 2'b01;
+        vif.arid    <= '0;""") if axi_full_signature else ""
+    # Indent the tie-off blocks to match the surrounding task bodies (12 spaces).
+    def _indent(s, n=12):
+        return "\n".join((" " * n + line) if line.strip() else line for line in s.splitlines()) + ("\n" if s else "")
+    write_tieoffs = _indent(full_axi_w_tieoffs)
+    read_tieoffs  = _indent(full_axi_r_tieoffs)
+    idle_tieoffs  = _indent(full_axi_idle, 12)
+    return textwrap.dedent(f"""\
         // ====================================================================
         // tb_api primitives — AXI4-Lite single-beat master + helpers.
         // ====================================================================
@@ -1181,7 +1263,7 @@ def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
             vif.bready  <= 1'b0;
             vif.arvalid <= 1'b0;
             vif.rready  <= 1'b0;
-        endtask
+{idle_tieoffs}        endtask
 
         task automatic write(input logic [ADDR_W-1:0] addr,
                              input logic [DATA_W-1:0] data);
@@ -1194,6 +1276,7 @@ def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
             vif.wdata   <= data;
             vif.wstrb   <= '1;
             vif.bready  <= 1'b1;
+{write_tieoffs}
             // Detect each handshake on the edge where both valid & ready are
             // high in the same cycle. Sample BEFORE the NBA region by using
             // `@(posedge clk iff ...)` so we don't race with our own drives.
@@ -1222,7 +1305,7 @@ def _emit_axi_lite_tb_api_primitives(direction: str) -> str:
             vif.araddr  <= addr;
             vif.arprot  <= 3'b000;
             vif.rready  <= 1'b1;
-            fork
+{read_tieoffs}            fork
                 begin
                     @(posedge vif.aclk iff (vif.arvalid && vif.arready));
                     vif.arvalid <= 1'b0;
@@ -2039,9 +2122,11 @@ def emit_axi_lite_driver(direction: str) -> str:
         """)
 
 
-def emit_axi_lite_monitor(direction: str) -> str:
+def emit_axi_lite_monitor(direction: str, axi_full_signature: bool = False) -> str:
     # Both directions observe completed handshakes on AW/W (write) and AR/R (read).
-    return textwrap.dedent("""\
+    # The AXI4-full degraded-mode guard (axi_full_signature) lives in the
+    # interface, not here — SV concurrent assertions cannot sit in a class body.
+    body = textwrap.dedent("""\
         class axi_lite_monitor extends uvm_monitor;
             `uvm_component_utils(axi_lite_monitor)
             uvm_analysis_port #(axi_lite_trans) ap;
@@ -2101,6 +2186,7 @@ def emit_axi_lite_monitor(direction: str) -> str:
             endtask
         endclass
         """)
+    return body
 
 
 def emit_axi_lite_sequence() -> str:
@@ -3333,6 +3419,10 @@ def main() -> int:
     handshake = _load_handshake(audit) if bus == "generic" else None
     direction = _direction(intake, handshake)
     has_ral = _bus_has_ral(intake, handshake)
+    # AXI4-full degraded-mode flag (Phase 1 detector + Phase 2 mandatory question).
+    # Only meaningful for bus_protocol: axi_lite; routed through rtl_discovery.yaml.
+    axi_full_signature = bool(rtl.get("axi_full_signature", False)) and bus == "axi_lite"
+    axi_full_id_width = int(rtl.get("axi_full_id_width", 1)) if axi_full_signature else 1
 
     regs_path = audit / "spec_normalized" / "registers.yaml"
     if has_ral:
@@ -3365,19 +3455,23 @@ def main() -> int:
     plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral, handshake), False))
     plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
 
-    plan.append((ip_root / "top" / f"{ip}_tb_top.sv", emit_tb_top(intake, rtl, handshake), False))
+    plan.append((ip_root / "top" / f"{ip}_tb_top.sv",
+                 emit_tb_top(intake, rtl, handshake, axi_full_signature), False))
 
     if bus == "apb":
         plan.append((ip_root / "tb" / "apb_if.sv", emit_apb_if(), False))
     elif bus == "ahb":
         plan.append((ip_root / "tb" / "ahb_if.sv", emit_ahb_if(), False))
     elif bus == "axi_lite":
-        plan.append((ip_root / "tb" / "axi_lite_if.sv", emit_axi_lite_if(), False))
+        plan.append((ip_root / "tb" / "axi_lite_if.sv",
+                     emit_axi_lite_if(axi_full_signature=axi_full_signature,
+                                      id_w=axi_full_id_width), False))
     else:  # generic
         prefix = handshake["bus_name"]
         plan.append((ip_root / "tb" / f"{prefix}_if.sv", emit_generic_if(handshake), False))
     plan.append((ip_root / "tb" / "tb_api" / "tb_api_pkg.sv", emit_tb_api_pkg(bus, addr_w, data_w, handshake), False))
-    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh", emit_tb_api_primitives(bus, direction, handshake), False))
+    plan.append((ip_root / "tb" / "tb_api" / "tb_api_primitives.svh",
+                 emit_tb_api_primitives(bus, direction, handshake, axi_full_signature), False))
     if vip_source == "generate_fresh":
         if bus == "apb":
             plan.append((ip_root / "tb" / "apb_agt_top" / "apb_agent.sv", emit_apb_agent_pkg(), False))
@@ -3400,7 +3494,8 @@ def main() -> int:
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_agt_config.sv", emit_axi_lite_agt_config(), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_trans.sv", emit_axi_lite_trans(), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_driver.sv", emit_axi_lite_driver(direction), False))
-            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_monitor.sv", emit_axi_lite_monitor(direction), False))
+            plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_monitor.sv",
+                         emit_axi_lite_monitor(direction, axi_full_signature), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequencer.sv", emit_axi_lite_sequencer(), False))
             plan.append((ip_root / "tb" / "axi_lite_agt_top" / "axi_lite_sequence.sv", emit_axi_lite_sequence(), False))
         else:  # generic
@@ -3478,10 +3573,13 @@ def main() -> int:
         "files_written": written,
         "has_dpi": has_dpi,
         "register_count": len(regs),
-        "scaffold_version": "v1.4",
+        "scaffold_version": "v1.5",
         "bus_protocol": bus,
         "register_semantics": effective_reg_sem,
     }
+    if axi_full_signature:
+        audit_doc["axi_full_signature"] = True
+        audit_doc["axi_full_id_width"] = axi_full_id_width
     if bus == "generic":
         audit_doc["generic_bus"] = {
             "bus_name":      handshake["bus_name"],
