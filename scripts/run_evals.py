@@ -304,7 +304,7 @@ def _write_transcript(eval_def: dict, ctx: dict, scaffold_log: str,
 
 def run_one(eval_def: dict, scratch_root: Path, mode: str,
              eval_outdir: Path, *, with_generic_sub_agent: bool = False,
-             generic_sub_agent_timeout: int = 300,
+             generic_sub_agent_timeout: int = 600,
              compile_fix_budget: int = 0,
              compile_fix_timeout: int = 240) -> dict:
     t0 = time.time()
@@ -519,7 +519,7 @@ def _run_compile_fix_attempt(ip_root: Path, attempt_n: int, sanity_test: str,
     return {"ok": True, "rc": proc.returncode, "log_tail": log_tail}
 
 
-def _run_generic_sub_agent(ip_root: Path, *, timeout: int = 300) -> dict:
+def _run_generic_sub_agent(ip_root: Path, *, timeout: int = 600) -> dict:
     """Spawn `claude -p` to run the generic-mode scaffold sub-agent against
     a placeholder skeleton produced by scaffold.py. Returns:
       {"ok": True,  "rc": int, "log_tail": str}  -- agent ran and exited 0
@@ -945,7 +945,7 @@ def cmd_run(argv: list[str]) -> int:
                     help="for evals with requires_generic_sub_agent: true, spawn "
                          "`claude -p` to run the scaffold sub-agent between scaffold "
                          "and compile. Off by default (Claude API cost).")
-    ap.add_argument("--generic-sub-agent-timeout", type=int, default=300,
+    ap.add_argument("--generic-sub-agent-timeout", type=int, default=600,
                     help="seconds before the generic-mode sub-agent subprocess is killed")
     ap.add_argument("--compile-fix-budget", type=int, default=None,
                     help="number of compile-fix sub-agent attempts after a failing compile. "
