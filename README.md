@@ -48,6 +48,7 @@ gen-tb/
 ├── references/            # progressive-disclosure detail docs
 │   ├── directory_layout.md
 │   ├── makefile_contract.md
+│   ├── top_sv.md          # top/interface wiring
 │   ├── apb.md             # APB agent generation rules
 │   ├── apb_external_vip.md
 │   ├── ahb.md             # AHB-Lite agent generation rules
@@ -60,7 +61,10 @@ gen-tb/
 │   ├── refm_dpi.md        # C/Python DPI ref model integration
 │   ├── tb_api.md          # DE-friendly task BFM
 │   ├── rtl_discovery.md   # Phase 1 schema + bus classification
+│   ├── rtl_stub.md        # generated RTL stub
 │   ├── spec_parsing.md
+│   ├── registers_yaml_schema.md
+│   ├── generated_claude_md.md  # generated per-IP CLAUDE.md
 │   └── sub_agent_compile_fix.md
 ├── scripts/               # discover_inputs.py, parse_regs.py, scaffold.py, ...
 └── evals/

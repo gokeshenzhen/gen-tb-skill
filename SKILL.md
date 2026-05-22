@@ -33,7 +33,7 @@ The result must compile, run `<ip>_sanity_test`, run
 |---|---|---|---|
 | Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | any single-channel request/response bus the scaffold sub-agent can infer from spec + the three built-in exemplars (e.g. I2C, SPI, Wishbone, OBI, custom register buses) | AXI4 full |
 | Simulator | VCS | VCS | xrun, vsim |
-| Ref model | none, SV, C-DPI, Python-DPI | none, SV, C-DPI, Python-DPI | — |
+| Ref model | none, SV, C-DPI | none, SV, C-DPI | Python-DPI |
 | Spec input | docx, pdf, md | docx, pdf, md | — |
 | Reg input | xlsx, csv, md, IP-XACT | xlsx, csv, md, IP-XACT (optional — set `register_semantics: no` for non-register buses) | — |
 
@@ -172,7 +172,8 @@ already known:
 - bus direction (AHB-Lite, AXI4-Lite, generic): DUT is slave (default) or master
 - bus VIP source: generate fresh, reuse existing VIP
 - external VIP reuse level: import only, drive with VIP
-- reference model language: none, SV, C-DPI, Python-DPI
+- reference model language: none, SV, C-DPI (Python-DPI schema exists but is
+  not yet emitted — see `references/refm_dpi.md`)
 - clock/reset: `pclk/presetn`, `hclk/hresetn`, or `aclk/aresetn` frequency, polarity, reset cycles
 - UVM version: default 1.2 unless user specifies otherwise
 - address width: `paddr_width`, `haddr_width`, or `axi_addr_width`, default 12
