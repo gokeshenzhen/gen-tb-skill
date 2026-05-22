@@ -40,6 +40,39 @@ Useful flags:
   yet — see `plan/eval-design.md` §三)
 - `--scratch /path` — override the scratch workspace
   (default `/tmp/gen-tb-evals`)
+- `--with-generic-sub-agent` — see "Generic-mode quality gate" below
+- `--compile-fix-budget N` — compile-fix retry attempts after a
+  failing compile (default 8 with `--with-generic-sub-agent`, else 0)
+
+Evals tagged `requires_generic_sub_agent: true` in `evals.json` are
+**skipped** unless `--with-generic-sub-agent` is passed — so the
+default Layer-1 run is free of Claude API cost and stays fast.
+
+### Generic-mode quality gate
+
+```bash
+python3 scripts/run_evals.py run --with-generic-sub-agent \
+    --filter generic-req-ack-simple-with-agent
+```
+
+For `bus_protocol: generic` fixtures, scaffold.py emits only a
+placeholder skeleton — the bus-shaped driver/monitor/`tb_api` bodies
+are filled in by a scaffold sub-agent. `--with-generic-sub-agent`
+inserts that sub-agent (`claude -p`, reads
+`references/sub_agent_generic_scaffold.md`) between scaffold and
+compile, then a compile-fix retry loop
+(`references/sub_agent_compile_fix.md`) absorbs up to
+`--compile-fix-budget` compile failures. This costs Claude API tokens
+and is non-deterministic — keep it off for fast regression, turn it
+on when iterating the generic-bus contracts.
+
+Useful flags here:
+
+- `--generic-sub-agent-timeout <s>` — per scaffold sub-agent call
+  (default 600s; master-direction / no-register fixtures are slower)
+- `--compile-fix-timeout <s>` — per compile-fix attempt (default 240s)
+
+If `claude` is not on `PATH`, these evals report `SKIP` (not fail).
 
 Output:
 
@@ -64,7 +97,9 @@ After each eval, the harness spawns `claude -p` reading
 `evals/agents/grader.md`. Result lands at
 `evals/iteration-N/<eval-name>/grading.json` with:
 
-- 8 quality dimensions, each `strong | ok | weak | broken`
+- 9 quality dimensions, each `strong | ok | weak | broken`
+  (the 9th, `generic_mode_honesty`, applies only to
+  `bus_protocol: generic` runs)
 - per-finding `severity` `high | medium | low`
 - `eval_feedback.suggested_assertions` — concrete proposals to harden
   `evals/evals.json` so the next iteration can catch the same issues

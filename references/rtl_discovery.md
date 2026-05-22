@@ -12,9 +12,15 @@ Write:
 work/_gen_audit/rtl_discovery.yaml
 ```
 
-This file records the exact RTL files, top module, APB/AHB/AXI4-Lite signal names,
+This file records the exact RTL files, top module, bus signal names,
 non-bus pads, and any wrapper address mapping. It is generated from user
 RTL or user filelists. Do not edit user RTL to make discovery easier.
+
+For built-in buses (APB / AHB-Lite / AXI4-Lite) it carries the bus
+interface block below. For any other bus the DUT falls through to
+generic mode — `rtl_discovery.yaml` then carries a `generic_interface`
+stub and the per-IP handshake is described separately in
+`work/_gen_audit/bus_handshake.yaml` (see `references/generic_bus.md`).
 
 ## Minimal v1.2 Schema
 
@@ -112,6 +118,50 @@ axi_lite_interface:
 `direction` controls which side of the bus the TB owns; it is
 load-bearing for both `tb_api` primitives and the generated agent
 (master BFM vs slave responder).
+
+## Bus Classification (Phase 1)
+
+After recording files and the top module, classify the bus from the
+top module's port signature and record the result:
+
+```yaml
+classified_bus: apb | ahb | axi_lite | unknown
+```
+
+- A clear APB / AHB-Lite / AXI4-Lite signature → that `bus_protocol`.
+- No match → `bus_protocol: unknown`; the bus is handled in generic
+  mode. Emit a `candidate_signals` list (the request/response-looking
+  port group) so the intake step can build `bus_handshake.yaml`.
+
+```yaml
+generic_interface:
+  note: ports described in work/_gen_audit/bus_handshake.yaml
+  candidate_signals: [stb_i, ack_o, adr_i, dat_i, dat_o, we_i, cyc_i]
+```
+
+### AXI4-full detector
+
+When the bus classifies as `axi_lite` but the top module also exposes
+full-AXI burst/ID ports (`awlen`, `arlen`, `awburst`, `arburst`,
+`awid`, `arid` — width > 0), record:
+
+```yaml
+axi_full_signature: true
+axi_full_id_width: 4          # derived from the awid/arid declaration
+```
+
+AXI4 full (real bursts / IDs / outstanding) is out of scope. The
+Phase 2 mandatory question asks whether the DUT actually uses bursts:
+
+- **Yes** → hard refuse, point to planned AXI4-full work.
+- **No** (single-beat only) → generate the AXI4-Lite environment in
+  **degraded mode**: the interface carries the burst/ID ports plus
+  `AWLEN == 0 && ARLEN == 0` concurrent assertions, and the TB master
+  ties the burst signals to single-beat values. See
+  `references/axi_lite.md` → "AXI4-full degraded mode".
+
+`classify_bus`, `detect_axi_full`, and `candidate_signals` are
+functions in `scripts/discover_inputs.py`.
 
 `scripts/scaffold.py` currently consumes `top_module.name`,
 `files[*].path`, `rtl_dir`, the bus interface block, and `other_pads`.
@@ -253,8 +303,9 @@ Common variants to match during discovery: any of the canonical names
 plus `_i`/`_o` suffixes, all-caps forms (`AWVALID` …), or AXI4 names
 with `axi_` prefix (`axi_awvalid` …). Do not normalize case in the
 emitted names. AXI4 burst/ID signals (`awlen`, `awid`, …), if present,
-flag as out-of-scope and ask the user to confirm the IP is truly
-AXI4-Lite-only.
+set `axi_full_signature: true` — see "AXI4-full detector" above; the
+Phase 2 mandatory question then decides hard-refuse vs AXI4-Lite
+degraded mode.
 
 ## Non-bus Pads
 

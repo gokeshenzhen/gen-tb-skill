@@ -24,11 +24,12 @@
 │   ├── <ip>_tb_top.sv                    clocks, reset, DUT, bus interface instantiation
 │   └── <ip>_assertions.sv                bound assertions (deferred to v1.2)
 ├── tb/
-│   ├── <bus>_if.sv                       APB/AHB/AXI-Lite interface with input clk/rst (G12)
+│   ├── <bus>_if.sv                       bus interface with input clk/rst (G12);
+│   │                                     <bus> = apb/ahb/axi_lite, or bus_name for generic mode
 │   ├── tb_api/
 │   │   ├── tb_api_pkg.sv                 package header (regenerated each scaffold)
 │   │   └── tb_api_primitives.svh         load-bearing tasks (preserved by default; see tb_api.md)
-│   ├── <bus>_agt_top/                    generated APB/AHB/AXI-Lite UVM agent
+│   ├── <bus>_agt_top/                    generated UVM agent (built-in bus or generic-mode skeleton)
 │   ├── seq_lib/                          v1.2 — DV-persona sequences
 │   ├── ral/
 │   │   └── <ip>_reg_block.sv             RAL (v1.1 stub; v1.2 full per ral_gen.md)
@@ -51,6 +52,8 @@
 │       │   ├── behavior.md
 │       │   └── parse_report.md
 │       ├── scaffold_audit.json           list of files written by scaffold.py
+│       ├── bus_handshake.yaml            generic mode only — handshake spec (Phase 2)
+│       ├── generic_bus_scaffold_prompt.md  generic mode only — sub-agent prompt + assumption log
 │       ├── compile_fix_attempts/         from Phase 5 (sub-agent runs)
 │       ├── sanity_result.json            from Phase 6
 │       └── unresolved.md                 from Phase 7 (always present, may be empty)

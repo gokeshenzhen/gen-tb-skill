@@ -11,16 +11,26 @@ register table (xlsx / csv / md / IP-XACT). Targets dual personas:
 ## Status
 
 **Pre-alpha implementation** — the skill entry point and the core
-scaffold/eval scripts are present. The current implementation targets
+scaffold/eval scripts are present. Built-in first-class buses are
 APB-slave, AHB-Lite (DUT-as-slave or DUT-as-master), and AXI4-Lite
-(DUT-as-slave or DUT-as-master) IPs. Local regression fixtures
-exercise all three bus protocols in both directions, plus external-VIP
-reuse for the slave directions.
+(DUT-as-slave or DUT-as-master). Any other single-channel
+request/response bus (I2C, SPI, Wishbone, custom register buses,
+streaming interfaces) is handled by a **generic fallback**: the same
+directory layout and sim flow, with the bus-shaped pieces inferred
+per-IP by a constrained scaffold sub-agent from a structured
+handshake description and the three built-in exemplars.
+
+Local regression fixtures exercise all three built-in protocols in
+both directions, external-VIP reuse for the slave directions, three
+generic-bus handshake shapes (`req_ack`, `valid_ready`, renamed-APB),
+and AXI4-Lite degraded mode for DUTs that expose full-AXI burst/ID
+ports but only do single-beat transfers.
 
 Currently in this repo:
 
 ```
-evals/fixtures/    # OpenCores-based regression fixtures (uart16550, aes128)
+evals/fixtures/    # regression fixtures: built-in buses (uart16550, aes128,
+                   #   ahb/axi_lite simple), generic-bus shapes, AXI-full degraded
 scripts/           # Input discovery, normalization, scaffold, eval helpers
 references/        # Progressive-disclosure implementation contracts
 SKILL.md           # Skill entry point
@@ -42,11 +52,14 @@ gen-tb/
 │   ├── apb_external_vip.md
 │   ├── ahb.md             # AHB-Lite agent generation rules
 │   ├── ahb_external_vip.md
-│   ├── axi_lite.md        # AXI4-Lite agent generation rules (slave + master)
+│   ├── axi_lite.md        # AXI4-Lite agent generation rules (slave + master + degraded)
 │   ├── axi_lite_external_vip.md
+│   ├── generic_bus.md     # generic-bus scaffold contract + review checklist
+│   ├── sub_agent_generic_scaffold.md  # generic-mode scaffold sub-agent
 │   ├── ral_gen.md
 │   ├── refm_dpi.md        # C/Python DPI ref model integration
 │   ├── tb_api.md          # DE-friendly task BFM
+│   ├── rtl_discovery.md   # Phase 1 schema + bus classification
 │   ├── spec_parsing.md
 │   └── sub_agent_compile_fix.md
 ├── scripts/               # discover_inputs.py, parse_regs.py, scaffold.py, ...
@@ -75,10 +88,12 @@ The skill always materializes the same directory shape (modeled on
 
 | Dimension | Scope |
 |---|---|
-| Bus protocol | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master); AXI4 full planned |
+| Bus protocol (built-in) | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) |
+| Bus protocol (generic fallback) | any single-channel request/response bus the scaffold sub-agent can infer — `req_ack` / `valid_ready` / `strobe` / `custom` handshakes |
+| AXI4 full | out of scope; DUTs with AXI burst/ID ports that only do single-beat transfers get an AXI4-Lite degraded-mode environment with `AWLEN/ARLEN==0` assertions |
 | Simulator | VCS only (xrun / questa planned) |
 | Ref model lang | none / SV / C-DPI; Python-DPI schema only |
-| RAL input | xlsx / csv / md tables / IP-XACT |
+| RAL input | xlsx / csv / md tables / IP-XACT (optional — `register_semantics: no` for non-register buses) |
 | Spec input | docx / pdf / md |
 | RTL state | Existing / external path / stub-from-spec |
 

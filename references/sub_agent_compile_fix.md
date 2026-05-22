@@ -100,8 +100,13 @@ Output:
 
 ## Attempt policy
 
-Run at most 5 compile-fix attempts and 3 runtime-fix attempts. If still
-failing, write `work/_gen_audit/unresolved.md` with:
+Built-in buses (APB / AHB-Lite / AXI4-Lite): at most 5 compile-fix
+attempts and 3 runtime-fix attempts. Generic mode
+(`bus_protocol: generic`): at most 8 compile-fix attempts and 5
+runtime-fix attempts — the generic-mode skeleton is sub-agent-inferred
+and converges more slowly.
+
+If still failing, write `work/_gen_audit/unresolved.md` with:
 
 - failing command
 - last log path
@@ -110,3 +115,16 @@ failing, write `work/_gen_audit/unresolved.md` with:
 - recommended next action
 
 Do not claim success unless the rerun passes.
+
+## Generic-mode additions
+
+When fixing a `bus_protocol: generic` testbench, also load
+`references/generic_bus.md` and the three exemplars
+(`references/apb.md`, `ahb.md`, `axi_lite.md`) to pattern-match the
+bus-shaped files. If an attempt log shows structural errors in a
+bus-agent file (not just typos), you may regenerate that whole file
+from scratch once — record it in
+`work/_gen_audit/compile_fix_attempts/attempt_N.note.md`. You may
+revise the interface clocking block when a sampling-skew error is the
+diagnosed root cause. Never change `tb_api::write/read/expect_reg`
+task signatures.
