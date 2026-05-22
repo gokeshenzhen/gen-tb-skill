@@ -225,6 +225,13 @@ def _check_assertion(a: dict, ctx: dict) -> tuple[bool, str]:
         after = _fixture_hash(FIXTURES / eval_def["fixture"])
         return before == after, "hash match" if before == after else "fixture modified!"
 
+    if kind == "file_contains":
+        target = ip_root / a["path"]
+        if not target.exists():
+            return False, f"{a['path']} missing"
+        text = target.read_text(errors="ignore")
+        return (a["needle"] in text), f"{a['path']} needle={a['needle']!r}"
+
     return False, f"unknown assertion kind: {kind}"
 
 

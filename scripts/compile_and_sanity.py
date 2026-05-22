@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 
-def run_make(ip_root: Path, target: str, sv_case: str | None = None) -> dict:
+def run_make(ip_root: Path, target: str, sv_case: str | None = None,
+             timeout: int = 600) -> dict:
     env = os.environ.copy()
     env["PROJ_DIR"] = str(ip_root)
     env["WORK_DIR"] = str(ip_root / "work")
@@ -22,7 +23,21 @@ def run_make(ip_root: Path, target: str, sv_case: str | None = None) -> dict:
     if sv_case:
         cmd.append(f"SV_CASE={sv_case}")
     t0 = time.time()
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ip_root)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                                cwd=ip_root, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        # A hung simulation (no testbench watchdog) must not run unbounded.
+        # rc=124 follows the conventional `timeout(1)` exit code.
+        out = e.stdout or ""
+        if isinstance(out, bytes):
+            out = out.decode(errors="ignore")
+        return {
+            "rc": 124,
+            "stdout": out,
+            "stderr": f"TIMEOUT: `make {target}` exceeded {timeout}s and was killed",
+            "duration_s": round(time.time() - t0, 2),
+        }
     return {
         "rc": result.returncode,
         "stdout": result.stdout,

@@ -1,0 +1,11 @@
+version: 1
+ip_name: axi_lite_full_degraded
+addr_width: 12
+data_width: 32
+registers:
+  - name: ID
+    offset: 0x0
+    width: 32
+    access: RO
+    reset: 0x000000A5
+    fields: []

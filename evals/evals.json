@@ -173,6 +173,25 @@
       ]
     },
     {
+      "id": 14,
+      "name": "axi-lite-full-degraded",
+      "fixture": "axi_lite_full_degraded",
+      "prompt": "I have an AXI4-Lite slave that exposes full-AXI burst/ID ports (AWLEN/ARLEN/AWBURST/AWID/...) but only ever does single-beat transfers. One RO register at 0x0 = 0xA5. Generate a UVM tb in AXI4-Lite degraded mode.",
+      "expected_output": "AXI4-Lite slave tb. Phase 1 detector sets axi_full_signature; the interface carries the burst/ID ports plus AWLEN/ARLEN==0 assertions; the TB master ties burst signals to single-beat values; sanity reads 0xA5.",
+      "files": [],
+      "assertions": [
+        {"name": "scaffold_files_present", "kind": "files_exist", "files_txt": "evals/fixtures/axi_lite_full_degraded/expected/files.txt"},
+        {"name": "axi_full_detected",      "kind": "file_contains", "path": "work/_gen_audit/rtl_discovery.yaml", "needle": "axi_full_signature: true"},
+        {"name": "degraded_assertion",     "kind": "file_contains", "path": "tb/axi_lite_if.sv", "needle": "p_awlen_zero"},
+        {"name": "compile_succeeds",       "kind": "compile_exit_zero"},
+        {"name": "no_compile_warnings",    "kind": "compile_no_warnings", "ignore_patterns": ["recompiling module", "make.*Entering directory", "make.*Leaving directory", "Verdi KDB elaboration done.*0 warning"]},
+        {"name": "sanity_passes",          "kind": "sim_passes",   "test": "axi_lite_full_degraded_sanity_test"},
+        {"name": "sanity_reads_id",        "kind": "log_contains", "test": "axi_lite_full_degraded_sanity_test", "needle": "= 0x000000a5"},
+        {"name": "reg_access_runs",        "kind": "sim_passes",   "test": "axi_lite_full_degraded_reg_access_test"},
+        {"name": "no_fixture_pollution",   "kind": "fixture_unchanged"}
+      ]
+    },
+    {
       "id": 12,
       "name": "generic-near-apb-renamed",
       "fixture": "generic_near_apb_renamed",
