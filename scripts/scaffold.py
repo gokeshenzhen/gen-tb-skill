@@ -102,6 +102,24 @@ def _load_yaml(path: Path) -> dict:
 
 _WIDTH_KEY = {"apb": "paddr_width", "ahb": "haddr_width", "axi_lite": "axi_addr_width"}
 _BUILTIN_BUSES = ("apb", "ahb", "axi_lite")
+_SUPPORTED_SIMULATORS = ("vcs", "questa")
+
+
+def _simulators(intake: dict) -> list[str]:
+    """Normalize intake.simulators into an ordered, de-duped list.
+    Default is ['vcs'] (backward compat with pre-Questa intake.yaml)."""
+    raw = intake.get("simulators")
+    if raw is None:
+        return ["vcs"]
+    if isinstance(raw, str):
+        raw = [raw]
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in raw:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 def _yesno(value: Any, key: str) -> str:
@@ -140,6 +158,14 @@ def _validate_intake(intake: dict) -> None:
     if "axi4_full_features" in intake and intake["axi4_full_features"] not in ("none", "present"):
         sys.exit("FATAL: axi4_full_features must be none|present "
                  f"(got {intake['axi4_full_features']!r})")
+    sims = _simulators(intake)
+    if not sims:
+        sys.exit("FATAL: intake.yaml simulators must be a non-empty list "
+                 f"(allowed values: {list(_SUPPORTED_SIMULATORS)})")
+    for s in sims:
+        if s not in _SUPPORTED_SIMULATORS:
+            sys.exit(f"FATAL: unsupported simulator: {s!r} "
+                     f"(allowed: {list(_SUPPORTED_SIMULATORS)})")
     # Item 10: Python-DPI is documented as schema-only — scaffold has no
     # py_dpi emitter, so accepting it would silently produce no working
     # integration. Refuse it loudly at the boundary instead.
@@ -541,7 +567,24 @@ def _pick_sanity_target(regs: list[dict]) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def emit_setup_sh() -> str:
+def emit_setup_sh(sims: list[str] | None = None) -> str:
+    sims = sims or ["vcs"]
+    # UVM_HOME fallback chain: respect any existing value first, otherwise
+    # derive from whichever simulator vendor variable is set. The shell
+    # short-circuits, so a present VCS_HOME wins over QUESTA_HOME, etc.
+    fallbacks: list[str] = []
+    if "vcs" in sims:
+        fallbacks.append('if [ -z "$UVM_HOME" ] && [ -n "$VCS_HOME" ]; then\n'
+                         '    export UVM_HOME="$VCS_HOME/etc/uvm-1.2"\n'
+                         'fi')
+    if "questa" in sims:
+        # Questa ships UVM under <install>/verilog_src/uvm-1.2 (modern installs)
+        # or has it preloaded as -L mtiUvm. Set UVM_HOME only if discoverable.
+        fallbacks.append('if [ -z "$UVM_HOME" ] && [ -n "$QUESTA_HOME" ] && '
+                         '[ -d "$QUESTA_HOME/verilog_src/uvm-1.2" ]; then\n'
+                         '    export UVM_HOME="$QUESTA_HOME/verilog_src/uvm-1.2"\n'
+                         'fi')
+    fallback_block = "\n".join(fallbacks)
     return textwrap.dedent("""\
         #!/bin/bash
         # gen-tb generated. Walks up to find .prj_top, exports PROJ_DIR / WORK_DIR.
@@ -560,27 +603,48 @@ def emit_setup_sh() -> str:
         cd "$cur_dir"
         export WORK_DIR=$PROJ_DIR/work
         mkdir -p "$WORK_DIR"
-        if [ -z "$UVM_HOME" ] && [ -n "$VCS_HOME" ]; then
-            export UVM_HOME="$VCS_HOME/etc/uvm-1.2"
-        fi
+        """) + fallback_block + textwrap.dedent("""
         echo "WORK_DIR=$WORK_DIR"
         echo "UVM_HOME=$UVM_HOME"
         echo "setup done"
         """)
 
 
-def emit_check_env_sh() -> str:
-    return textwrap.dedent("""\
+def emit_check_env_sh(sims: list[str] | None = None) -> str:
+    sims = sims or ["vcs"]
+    head = textwrap.dedent("""\
         #!/bin/bash
         # gen-tb generated. Validates simulator env before compile.
+        # Picks the SIM the user is about to invoke (default: first generated).
         err=0
-        command -v vcs >/dev/null || { echo "FATAL: vcs not in PATH"; err=1; }
-        [ -n "$VCS_HOME" ] || { echo "FATAL: VCS_HOME unset"; err=1; }
-        [ -n "$UVM_HOME" ] || { echo "FATAL: UVM_HOME unset (source script/setup.sh first)"; err=1; }
+        SIM="${SIM:-%s}"
         [ -n "$PROJ_DIR" ] || { echo "FATAL: PROJ_DIR unset (source script/setup.sh first)"; err=1; }
-        [ -e "$UVM_HOME/src/uvm.sv" ] || { echo "FATAL: UVM source not found"; err=1; }
-        exit $err
-        """)
+        """ % sims[0])
+    case_lines = ['case "$SIM" in']
+    if "vcs" in sims:
+        case_lines += [
+            "    vcs)",
+            '        command -v vcs >/dev/null || { echo "FATAL: vcs not in PATH"; err=1; }',
+            '        [ -n "$VCS_HOME" ] || { echo "FATAL: VCS_HOME unset"; err=1; }',
+            '        [ -n "$UVM_HOME" ] || { echo "FATAL: UVM_HOME unset (source script/setup.sh first)"; err=1; }',
+            '        [ -e "$UVM_HOME/src/uvm.sv" ] || { echo "FATAL: UVM source not found at $UVM_HOME/src/uvm.sv"; err=1; }',
+            "        ;;",
+        ]
+    if "questa" in sims:
+        case_lines += [
+            "    questa)",
+            '        # Questa: only vlog/vsim must resolve; UVM may live in -L mtiUvm rather than $UVM_HOME.',
+            '        command -v vlog >/dev/null || { echo "FATAL: vlog not in PATH"; err=1; }',
+            '        command -v vsim >/dev/null || { echo "FATAL: vsim not in PATH"; err=1; }',
+            "        ;;",
+        ]
+    case_lines += [
+        '    *) echo "FATAL: unsupported SIM=$SIM (expected: %s)"; err=1 ;;' % "|".join(sims),
+        "esac",
+        "exit $err",
+        "",
+    ]
+    return head + "\n".join(case_lines)
 
 
 def emit_design_f(rtl: dict) -> str:
@@ -661,6 +725,136 @@ def emit_makefile(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
         f"\trm -rf $(PROJ_DIR)/work/work_*\n"
         f"wave:\n"
         f"\tverdi -sv -f $(FLIST) -f $(TBLIST) &\n"
+    )
+
+
+def emit_makefile_questa(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
+    """Questa (vlog/vsim) flow mirroring the VCS makefile contract.
+
+    NOTE: gen-tb has no Questa license/install to validate this flow against —
+    the recipe is modeled on the uart16550 reference's `makefile_xrun` and the
+    Mentor "UVM with Questa" cookbook. Verify locally before relying on it in
+    CI. Targets, variable names (SV_CASE, seed, cov, UVM_VER, FLIST, TBLIST,
+    SIM_DIR, COMP_LOG, SIM_LOG) match references/makefile_contract.md so
+    regression scripts stay portable across SIMs.
+    """
+    ip = intake["ip_name"]
+    uvm_ver = intake.get("uvm_version", "1.2")
+
+    _make = lambda s: s.replace("$PROJ_DIR", "$(PROJ_DIR)")
+
+    dpi_section = ""
+    dpi_prereq = ""
+    dpi_sim_extra = ""
+    dpi_comp_extra = ""
+    if has_dpi and dpi:
+        c_srcs = " \\\n           ".join(_make(p) for p in dpi["c_sources"])
+        inc_dirs = sorted({str(Path(h).parent) for h in dpi["c_headers"]})
+        inc_dirs += dpi.get("include_dirs", [])
+        inc_flags = " ".join(f"-I{_make(d)}" for d in inc_dirs)
+        cflags = " ".join(dpi.get("cflags", ["-O2", "-Wall"]))
+        # Questa loads DPI via a precompiled shared object (-sv_lib). VCS
+        # uses inline -CFLAGS instead, so we emit a separate gcc rule here.
+        # gen-tb has not validated this command line against a real Questa
+        # install — please confirm `-I$$QUESTA_HOME/include` and any local
+        # gcc/glibc constraints in your environment before relying on this.
+        dpi_section = textwrap.dedent(f"""
+            # === BEGIN gen-tb DPI section (Questa, auto-generated) ===
+            # gcc compiles the C ref-model into a shared lib; vsim loads it via -sv_lib.
+            # Static-only: not validated against a live Questa install — verify locally.
+            C_SRCS    = {c_srcs}
+            C_INC     = {inc_flags}
+            C_CFLAGS  = {cflags}
+            DPI_LIB   = $(SIM_DIR)/dpi_ref
+            # === END gen-tb DPI section ===
+            """)
+        dpi_prereq = "$(DPI_LIB).so "
+        dpi_sim_extra = " -sv_lib $(DPI_LIB)"
+        dpi_comp_extra = ""
+
+    dpi_rule = ""
+    if has_dpi and dpi:
+        dpi_rule = (
+            "$(DPI_LIB).so: $(C_SRCS)\n"
+            "\t@mkdir -p $(SIM_DIR)\n"
+            "\tgcc -shared -fPIC -I$${QUESTA_HOME:-/opt/questa}/include "
+            "$(C_INC) $(C_CFLAGS) $(C_SRCS) -o $@\n"
+        )
+
+    return (
+        f"# gen-tb generated Questa (vlog/vsim) makefile for {ip}.\n"
+        f"# Invoke with: make -f makefile_questa all SV_CASE=<test>\n"
+        f"#\n"
+        f"# NOTE (static-only): gen-tb produced this flow without a Questa\n"
+        f"# install to validate against. The recipe follows the Mentor UVM\n"
+        f"# cookbook and the uart16550 makefile_xrun reference. Confirm\n"
+        f"# locally — in particular UVM library mapping (-L mtiUvm vs.\n"
+        f"# +incdir+$$UVM_HOME/src), DPI -sv_lib path conventions, and\n"
+        f"# coverage merge tooling — before relying on this in CI.\n"
+        f"ifndef PROJ_DIR\n"
+        f"$(error PROJ_DIR not set — source script/setup.sh first)\n"
+        f"endif\n\n"
+        f"VLIB      ?= vlib\n"
+        f"VMAP      ?= vmap\n"
+        f"VLOG      ?= vlog\n"
+        f"VSIM      ?= vsim\n"
+        f"FLIST     ?= $(PROJ_DIR)/script/design.f\n"
+        f"TBLIST    ?= $(PROJ_DIR)/script/tb.f\n"
+        f"SV_CASE   ?= {ip}_sanity_test\n"
+        f"seed      ?= $(shell date +1%N)\n"
+        f"cov       ?= 0\n"
+        f"UVM_VER   ?= {uvm_ver}\n"
+        f"TB_TOP    ?= {ip}_tb_top\n\n"
+        f"SIM_DIR   = $(PROJ_DIR)/work/work_$(SV_CASE)_\n"
+        f"COMP_LOG  = $(SIM_DIR)/comp.log\n"
+        f"SIM_LOG   = $(SIM_DIR)/run.log\n"
+        f"WORK_LIB  = $(SIM_DIR)/work\n"
+        f"{dpi_section}\n"
+        f"# Use Questa's preloaded UVM libraries (-L mtiUvm[Ieee]). To compile\n"
+        f"# UVM from $$UVM_HOME source instead, drop these and add\n"
+        f"# `+incdir+$$UVM_HOME/src $$UVM_HOME/src/uvm_pkg.sv` to CMP_OPTS.\n"
+        f"QUESTA_UVM = -L mtiUvm -L mtiUvmIeee\n\n"
+        f"CMP_OPTS  = -sv -mfcu +acc=rmb -timescale 1ns/1ps -work $(WORK_LIB) \\\n"
+        f"            +define+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR +define+QUESTA \\\n"
+        f"            -l $(COMP_LOG) \\\n"
+        f"            -f $(FLIST) -f $(TBLIST){dpi_comp_extra}\n\n"
+        f"SIM_OPTS  = -c -onfinish exit -do \"run -all; quit -f\" \\\n"
+        f"            -sv_seed $(seed) -l $(SIM_LOG) \\\n"
+        f"            -lib $(WORK_LIB) $(QUESTA_UVM){dpi_sim_extra} \\\n"
+        f"            +UVM_TESTNAME=$(SV_CASE) +UVM_VERBOSITY=UVM_LOW \\\n"
+        f"            $(TB_TOP)\n\n"
+        f"ifeq ($(cov),1)\n"
+        f"CMP_OPTS += +cover=bcestf\n"
+        f"# Questa coverage is collected per-run via -coverage; the .ucdb lands\n"
+        f"# in $(SIM_DIR)/cov.ucdb so `make merge` can vcover them later.\n"
+        f"SIM_OPTS := $(subst -do \"run -all; quit -f\",-coverage -do \"coverage save -onexit $(SIM_DIR)/cov.ucdb; run -all; quit -f\",$(SIM_OPTS))\n"
+        f"endif\n\n"
+        f".PHONY: comp run all clean wave merge help\n"
+        f"all: comp run\n"
+        f"comp: {dpi_prereq}\n"
+        f"\t@mkdir -p $(SIM_DIR)\n"
+        f"\t$(VLIB) $(WORK_LIB)\n"
+        f"\tcd $(SIM_DIR) && $(VLOG) $(CMP_OPTS)\n"
+        f"{dpi_rule}"
+        f"run:\n"
+        f"\t@mkdir -p $(SIM_DIR)\n"
+        f"\tcd $(SIM_DIR) && $(VSIM) $(SIM_OPTS)\n"
+        f"\t@echo \"Done.  seed=$(seed)  log=$(SIM_LOG)\"\n"
+        f"clean:\n"
+        f"\trm -rf $(PROJ_DIR)/work/work_*\n"
+        f"wave:\n"
+        f"\t$(VSIM) -gui -lib $(WORK_LIB) $(QUESTA_UVM) "
+        f"+UVM_TESTNAME=$(SV_CASE) $(TB_TOP) &\n"
+        f"merge:\n"
+        f"\t@mkdir -p $(PROJ_DIR)/work/cov_report\n"
+        f"\tvcover merge -out $(PROJ_DIR)/work/cov_report/merged.ucdb "
+        f"$(PROJ_DIR)/work/work_*/cov.ucdb\n"
+        f"\tvcover report -html -htmldir $(PROJ_DIR)/work/cov_report "
+        f"$(PROJ_DIR)/work/cov_report/merged.ucdb\n"
+        f"help:\n"
+        f"\t@echo 'gen-tb Questa makefile — see references/makefile_contract.md'\n"
+        f"\t@echo 'targets: comp run all clean wave merge'\n"
+        f"\t@echo 'vars:    SV_CASE seed cov UVM_VER VLIB VLOG VSIM TB_TOP FLIST TBLIST'\n"
     )
 
 
@@ -3579,12 +3773,20 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
             "implementation.",
             "",
         ]
+    sims = _simulators(intake)
+    sim_disp = ", ".join(s.upper() if s == "vcs" else s.capitalize() for s in sims)
+    # `script/makefile` is always present (either VCS-native, or a shim
+    # that includes makefile_questa when Questa is the only simulator).
+    make_prefix = "make"
     lines += [
         "## Current Configuration",
         "",
         f"- IP: `{ip}`",
         f"- Bus: `{bus_desc}`",
-        "- Simulator: VCS",
+        f"- Simulator(s): `{sim_disp}`" + (
+            "  — Questa flow was generated statically; gen-tb has no Questa "
+            "install to validate it. Verify locally." if "questa" in sims else ""
+        ),
         f"- UVM: `{intake.get('uvm_version', '1.2')}`",
         f"- Bus VIP source: `{vip_source}`",
         f"- External VIP reuse level: `{reuse_disp}`",
@@ -3595,9 +3797,14 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
         "```bash",
         f"cd {ip}/script",
         "source setup.sh",
-        "make comp",
+        f"{make_prefix} comp",
     ]
-    lines += [f"make all SV_CASE={t}" for t in tests]
+    lines += [f"{make_prefix} all SV_CASE={t}" for t in tests]
+    if "vcs" in sims and "questa" in sims:
+        lines += [
+            "# Switch to Questa instead:",
+            f"make -f makefile_questa all SV_CASE={tests[0]}",
+        ]
     lines += [
         "```",
         "",
@@ -3752,12 +3959,24 @@ def main() -> int:
     # ---- Build the (target, content) write plan ----
     plan: list[tuple[Path, str, bool]] = []  # (path, content, is_executable)
 
+    sims = _simulators(intake)
+
     plan.append((ip_root / ".prj_top", "", False))
-    plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(), True))
-    plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(), True))
+    plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(sims), True))
+    plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(sims), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
     plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral, handshake), False))
-    plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
+    if "vcs" in sims:
+        plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
+    if "questa" in sims:
+        plan.append((ip_root / "script" / "makefile_questa", emit_makefile_questa(intake, has_dpi, dpi), False))
+        # If Questa is the only requested sim, make `makefile` an include
+        # shim so `make all SV_CASE=...` still works without -f.
+        if "vcs" not in sims:
+            plan.append((ip_root / "script" / "makefile",
+                         "# gen-tb: only Questa requested; delegate to makefile_questa.\n"
+                         "include $(dir $(lastword $(MAKEFILE_LIST)))makefile_questa\n",
+                         False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv",
                  emit_tb_top(intake, rtl, handshake, axi_full_signature), False))

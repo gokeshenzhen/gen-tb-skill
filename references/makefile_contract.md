@@ -13,7 +13,9 @@
 | `seed` | `$(shell date +1%N)` | random seed; nanosecond-timestamp default for repeatability |
 | `cov` | `0` | set to `1` to enable `tgl+line+cond+fsm+branch` collection |
 | `UVM_VER` | `1.2` | `-ntb_opts uvm-$(UVM_VER)`; honors intake.yaml |
-| `VCS` | `vcs` | simulator executable; override on cmdline if non-standard |
+| `VCS` | `vcs` | simulator executable (VCS makefile); override on cmdline if non-standard |
+| `VLOG` / `VSIM` / `VLIB` | `vlog` / `vsim` / `vlib` | simulator executables (Questa makefile) |
+| `TB_TOP` | `<ip>_tb_top` | top module name passed to vsim (Questa makefile) |
 | `FLIST` | `$(PROJ_DIR)/script/design.f` | RTL filelist |
 | `TBLIST` | `$(PROJ_DIR)/script/tb.f` | tb-side filelist |
 
@@ -75,6 +77,39 @@ Internal helpers (subject to change without notice):
 - `dpi_section`, `extra_cmp` — scaffold.py template fragments
 
 Do not invoke or override these from regression scripts.
+
+## Multi-simulator (Questa)
+
+When `intake.yaml` lists `simulators: [vcs, questa]` (or `[questa]`),
+`scaffold.py` also emits `script/makefile_questa`. The Questa flow
+mirrors this contract: same public variables (`SV_CASE`, `seed`,
+`cov`, `UVM_VER`, `FLIST`, `TBLIST`), same targets
+(`comp run all clean wave merge help`), same per-case `SIM_DIR`
+layout — only the toolchain underneath differs (`vlib + vlog + vsim`
+vs. `vcs + simv`).
+
+Invocation:
+
+```bash
+make -f makefile_questa all SV_CASE=<test>     # both sims generated
+make all SV_CASE=<test>                         # vcs (default) or shim
+```
+
+When **only** Questa is requested, `script/makefile` is a one-line
+shim that `include`s `makefile_questa`, so the canonical
+`make all SV_CASE=...` still works.
+
+**Static-only caveat.** gen-tb has no Questa license/install to
+validate this flow against. The Questa makefile is modeled on the
+uart16550 `script/makefile_xrun` reference and the Mentor "UVM with
+Questa" cookbook. The generated `CLAUDE.md` repeats this caveat and
+asks the user to verify before relying on the flow in CI. In
+particular, confirm:
+
+- UVM library mapping (`-L mtiUvm -L mtiUvmIeee` vs. compiling from
+  `$UVM_HOME/src`)
+- DPI shared-library path conventions and `gcc -I$QUESTA_HOME/include`
+- coverage merge (`vcover merge` / `vcover report`)
 
 ## Why lowercase `makefile`
 

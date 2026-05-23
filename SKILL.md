@@ -32,7 +32,7 @@ The result must compile, run `<ip>_sanity_test`, run
 | Dimension | Built-in (high-quality scaffold) | Generic fallback | Planned |
 |---|---|---|---|
 | Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | any single-channel request/response bus the scaffold sub-agent can infer from spec + the three built-in exemplars (e.g. I2C, SPI, Wishbone, OBI, custom register buses) | AXI4 full |
-| Simulator | VCS | VCS | xrun, vsim |
+| Simulator | VCS, Questa (vlog/vsim — static-only, see note) | VCS, Questa | xrun |
 | Ref model | none, SV, C-DPI | none, SV, C-DPI | Python-DPI |
 | Spec input | docx, pdf, md | docx, pdf, md | — |
 | Reg input | xlsx, csv, md, IP-XACT | xlsx, csv, md, IP-XACT (optional — set `register_semantics: no` for non-register buses) | — |
@@ -183,6 +183,16 @@ already known:
 - endianness for multi-word arrays
 - coverage: enabled or skipped
 - required extra smoke tests
+- **simulators**: multi-select VCS and/or Questa. Default `[vcs]` when
+  unanswered. Stored as `simulators: [vcs, questa]` in `intake.yaml`.
+  Scaffold emits one makefile per chosen simulator (`script/makefile`
+  for VCS, `script/makefile_questa` for Questa; if only Questa is
+  chosen, `script/makefile` is a thin shim that includes the Questa
+  one). The Questa flow is **static-only** — gen-tb has no Questa
+  install to validate against; tell the user to verify locally before
+  trusting it in CI. The user-facing question may say:
+  *"Which simulators should I generate makefiles for? VCS / Questa
+  (multi-select; default VCS)."*
 
 ### AXI4-full Mandatory Question
 
