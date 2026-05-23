@@ -32,7 +32,7 @@ The result must compile, run `<ip>_sanity_test`, run
 | Dimension | Built-in (high-quality scaffold) | Generic fallback | Planned |
 |---|---|---|---|
 | Bus | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) | any single-channel request/response bus the scaffold sub-agent can infer from spec + the three built-in exemplars (e.g. I2C, SPI, Wishbone, OBI, custom register buses) | AXI4 full |
-| Simulator | VCS, Questa (vlog/vsim — static-only, see note) | VCS, Questa | xrun |
+| Simulator | VCS, Questa (vlog/vsim — static-only, see note), xrun (Cadence Xcelium) | VCS, Questa, xrun | — |
 | Ref model | none, SV, C-DPI | none, SV, C-DPI | Python-DPI |
 | Spec input | docx, pdf, md | docx, pdf, md | — |
 | Reg input | xlsx, csv, md, IP-XACT | xlsx, csv, md, IP-XACT (optional — set `register_semantics: no` for non-register buses) | — |
@@ -200,6 +200,13 @@ already known:
   not yet emitted — see `references/refm_dpi.md`)
 - clock/reset: `pclk/presetn`, `hclk/hresetn`, or `aclk/aresetn` frequency, polarity, reset cycles
 - UVM version: default 1.2 unless user specifies otherwise
+- simulator toolchain (multi-select): `vcs`, `xrun`. Default `[vcs]`.
+  Record in `intake.yaml` as `simulators: [vcs]` / `[xrun]` / `[vcs, xrun]`.
+  `vcs` selected → emit `script/makefile`. `xrun` selected → emit
+  `script/makefile_xrun` (invoke via `make -f makefile_xrun ...`).
+  At least one must be selected. `scripts/compile_and_sanity.py` drives
+  VCS by default; for xrun-only configurations, run mandatory tests
+  with `make -f makefile_xrun all SV_CASE=<case>` manually.
 - address width: `paddr_width`, `haddr_width`, or `axi_addr_width`, default 12
 - endianness for multi-word arrays
 - coverage: enabled or skipped
@@ -477,10 +484,14 @@ plus which exemplars were used and which mandatory test set
 in generic mode must additionally carry the manual review checklist
 from `references/generic_bus.md`.
 
-The summary's exact next command:
+The summary's exact next command depends on `intake.yaml: simulators`:
 
 ```bash
+# VCS (default)
 cd <ip>/script && source setup.sh && make all SV_CASE=<ip>_sanity_test
+
+# xrun (when only xrun was selected; with both, either works)
+cd <ip>/script && source setup.sh && make -f makefile_xrun all SV_CASE=<ip>_sanity_test
 ```
 
 Load `references/generated_claude_md.md` for `CLAUDE.md`.

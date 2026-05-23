@@ -16,6 +16,7 @@
 | `VCS` | `vcs` | simulator executable (VCS makefile); override on cmdline if non-standard |
 | `VLOG` / `VSIM` / `VLIB` | `vlog` / `vsim` / `vlib` | simulator executables (Questa makefile) |
 | `TB_TOP` | `<ip>_tb_top` | top module name passed to vsim (Questa makefile) |
+| `XRUN` | `xrun` | simulator executable (xrun makefile); override on cmdline if non-standard |
 | `FLIST` | `$(PROJ_DIR)/script/design.f` | RTL filelist |
 | `TBLIST` | `$(PROJ_DIR)/script/tb.f` | tb-side filelist |
 
@@ -78,29 +79,37 @@ Internal helpers (subject to change without notice):
 
 Do not invoke or override these from regression scripts.
 
-## Multi-simulator (Questa)
+## Multi-simulator support (`intake.yaml: simulators`)
 
-When `intake.yaml` lists `simulators: [vcs, questa]` (or `[questa]`),
-`scaffold.py` also emits `script/makefile_questa`. The Questa flow
-mirrors this contract: same public variables (`SV_CASE`, `seed`,
-`cov`, `UVM_VER`, `FLIST`, `TBLIST`), same targets
-(`comp run all clean wave merge help`), same per-case `SIM_DIR`
-layout — only the toolchain underneath differs (`vlib + vlog + vsim`
-vs. `vcs + simv`).
+`scaffold.py` reads the `simulators` list from `intake.yaml` (default
+`[vcs]`, allowed values `vcs`, `questa`, and `xrun`) and emits one
+makefile per selected simulator side-by-side under `script/`:
 
-Invocation:
+| Simulator | File | Invocation |
+|---|---|---|
+| `vcs` | `script/makefile` | `make all SV_CASE=<case>` |
+| `questa` | `script/makefile_questa` | `make -f makefile_questa all SV_CASE=<case>` |
+| `xrun` | `script/makefile_xrun` | `make -f makefile_xrun all SV_CASE=<case>` |
 
-```bash
-make -f makefile_questa all SV_CASE=<test>     # both sims generated
-make all SV_CASE=<test>                         # vcs (default) or shim
-```
+All files honor the same public variables (`SV_CASE`, `seed`, `cov`,
+`UVM_VER`, `FLIST`, `TBLIST`) and the same targets (`comp`, `run`,
+`all`, `clean`, `wave`, `merge`, `help`). The xrun variant compiles
++ elaborates with `xrun -elaborate` and runs with `xrun -R`, layering
+the Cadence-bundled UVM via `-uvmhome CDNS-$(UVM_VER)`. The Questa
+variant uses `vlib + vlog + vsim`. The DPI section is regenerated
+per-simulator (`-CFLAGS` for VCS, `-cflags` for xrun, Questa's own
+shared-library convention).
 
-When **only** Questa is requested, `script/makefile` is a one-line
-shim that `include`s `makefile_questa`, so the canonical
-`make all SV_CASE=...` still works.
+When **only** Questa (or only xrun) is requested, `script/makefile`
+is a one-line shim that `include`s the simulator-specific makefile,
+so the canonical `make all SV_CASE=...` still works.
 
-**Static-only caveat.** gen-tb has no Questa license/install to
-validate this flow against. The Questa makefile is modeled on the
+`scripts/compile_and_sanity.py` drives VCS only; for xrun-only or
+questa-only configurations the user runs the mandatory tests
+manually with `make -f makefile_<sim> all SV_CASE=<case>`.
+
+**Static-only caveat (Questa).** gen-tb has no Questa license/install
+to validate this flow against. The Questa makefile is modeled on the
 uart16550 `script/makefile_xrun` reference and the Mentor "UVM with
 Questa" cookbook. The generated `CLAUDE.md` repeats this caveat and
 asks the user to verify before relying on the flow in CI. In

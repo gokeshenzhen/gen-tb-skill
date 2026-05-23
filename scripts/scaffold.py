@@ -179,6 +179,18 @@ def _validate_intake(intake: dict) -> None:
     if refm not in ("skip", "sv", "c_dpi"):
         sys.exit(f"FATAL: unsupported ref_model_language: {refm!r} "
                  "(allowed: skip|sv|c_dpi)")
+    # Accept legacy singular `simulator:` from older fixtures/intakes.
+    if "simulators" not in intake and "simulator" in intake:
+        intake["simulators"] = intake.pop("simulator")
+    sims = intake.get("simulators", ["vcs"])
+    if isinstance(sims, str):
+        sims = [sims]
+    if not isinstance(sims, list) or not sims:
+        sys.exit("FATAL: simulators must be a non-empty list (allowed values: vcs, xrun)")
+    bad = [s for s in sims if s not in ("vcs", "xrun")]
+    if bad:
+        sys.exit(f"FATAL: unsupported simulators: {bad!r} (allowed: vcs, xrun)")
+    intake["simulators"] = sims
     if bus == "generic":
         # External VIP reuse is not supported in generic mode.
         for key in ("generic_vip_source", "apb_vip_source", "ahb_vip_source", "axi_lite_vip_source"):
@@ -610,8 +622,8 @@ def emit_setup_sh(sims: list[str] | None = None) -> str:
         """)
 
 
-def emit_check_env_sh(sims: list[str] | None = None) -> str:
-    sims = sims or ["vcs"]
+def emit_check_env_sh(simulators: list[str] | None = None) -> str:
+    sims = simulators or ["vcs"]
     head = textwrap.dedent("""\
         #!/bin/bash
         # gen-tb generated. Validates simulator env before compile.
@@ -636,6 +648,13 @@ def emit_check_env_sh(sims: list[str] | None = None) -> str:
             '        # Questa: only vlog/vsim must resolve; UVM may live in -L mtiUvm rather than $UVM_HOME.',
             '        command -v vlog >/dev/null || { echo "FATAL: vlog not in PATH"; err=1; }',
             '        command -v vsim >/dev/null || { echo "FATAL: vsim not in PATH"; err=1; }',
+            "        ;;",
+        ]
+    if "xrun" in sims:
+        case_lines += [
+            "    xrun)",
+            '        command -v xrun >/dev/null || { echo "FATAL: xrun not in PATH (Cadence Xcelium)"; err=1; }',
+            '        [ -n "$XLM_HOME$CDS_INST_DIR" ] || { echo "WARN: neither XLM_HOME nor CDS_INST_DIR set — xrun -uvmhome CDNS-1.2 may still work via xrun defaults"; }',
             "        ;;",
         ]
     case_lines += [
@@ -855,6 +874,90 @@ def emit_makefile_questa(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
         f"\t@echo 'gen-tb Questa makefile — see references/makefile_contract.md'\n"
         f"\t@echo 'targets: comp run all clean wave merge'\n"
         f"\t@echo 'vars:    SV_CASE seed cov UVM_VER VLIB VLOG VSIM TB_TOP FLIST TBLIST'\n"
+    )
+
+
+def emit_makefile_xrun(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
+    """xrun (Cadence Xcelium) variant.
+
+    Mirrors the public API in references/makefile_contract.md (SV_CASE,
+    seed, cov, UVM_VER, FLIST, TBLIST, dpi section). Invoke as:
+        make -f makefile_xrun all SV_CASE=<case>
+    """
+    ip = intake["ip_name"]
+    uvm_ver = intake.get("uvm_version", "1.2")
+
+    _make = lambda s: s.replace("$PROJ_DIR", "$(PROJ_DIR)")
+
+    dpi_section = ""
+    extra_cmp = ""
+    if has_dpi and dpi:
+        c_srcs = " \\\n           ".join(_make(p) for p in dpi["c_sources"])
+        inc_dirs = sorted({str(Path(h).parent) for h in dpi["c_headers"]})
+        inc_dirs += dpi.get("include_dirs", [])
+        inc_flags = " ".join(f"-I{_make(d)}" for d in inc_dirs)
+        cflags = " ".join(dpi.get("cflags", ["-O2", "-Wall"]))
+        dpi_section = textwrap.dedent(f"""
+            # === BEGIN gen-tb DPI section (auto-generated from intake.yaml) ===
+            C_SRCS    = {c_srcs}
+            C_INC     = -cflags "{inc_flags} {cflags}"
+            # === END gen-tb DPI section ===
+            """)
+        extra_cmp = "            $(C_INC) $(C_SRCS) \\\n"
+
+    return (
+        f"# gen-tb generated makefile_xrun for {ip}\n"
+        f"# Invoke with: make -f makefile_xrun <target> [SV_CASE=...]\n"
+        f"ifndef PROJ_DIR\n"
+        f"$(error PROJ_DIR not set — source script/setup.sh first)\n"
+        f"endif\n\n"
+        f"XRUN      ?= xrun\n"
+        f"FLIST     ?= $(PROJ_DIR)/script/design.f\n"
+        f"TBLIST    ?= $(PROJ_DIR)/script/tb.f\n"
+        f"SV_CASE   ?= {ip}_sanity_test\n"
+        f"seed      ?= $(shell date +1%N)\n"
+        f"cov       ?= 0\n"
+        f"UVM_VER   ?= {uvm_ver}\n\n"
+        f"SIM_DIR   = $(PROJ_DIR)/work/work_$(SV_CASE)_\n"
+        f"COMP_LOG  = $(SIM_DIR)/comp.log\n"
+        f"SIM_LOG   = $(SIM_DIR)/run.log\n"
+        f"XMLIBDIR  = $(SIM_DIR)/xcelium.d\n"
+        f"{dpi_section}\n"
+        f"# xrun runs elab + sim in one invocation; -elaborate stops after elab.\n"
+        f"CMP_OPTS  = -64bit -sv -uvmhome CDNS-$(UVM_VER) \\\n"
+        f"            -timescale 1ns/1ps -access +rwc \\\n"
+        f"            -xmlibdirname xcelium.d \\\n"
+        f"            +define+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR \\\n"
+        f"            -f $(FLIST) -f $(TBLIST) \\\n"
+        f"{extra_cmp}            -l $(COMP_LOG)\n\n"
+        f"SIM_OPTS  = -64bit -R -xmlibdirname xcelium.d \\\n"
+        f"            -svseed $(seed) +ntb_random_seed=$(seed) \\\n"
+        f"            +UVM_TESTNAME=$(SV_CASE) +UVM_VERBOSITY=UVM_LOW \\\n"
+        f"            -l $(SIM_LOG)\n\n"
+        f"ifeq ($(cov),1)\n"
+        f"CMP_OPTS += -coverage all -covoverwrite -covworkdir $(SIM_DIR)/cov_work \\\n"
+        f"            -covtest $(SV_CASE)_$(seed)\n"
+        f"SIM_OPTS += -covoverwrite -covworkdir $(SIM_DIR)/cov_work \\\n"
+        f"            -covtest $(SV_CASE)_$(seed)\n"
+        f"endif\n\n"
+        f".PHONY: comp run all clean wave merge help\n"
+        f"all: comp run\n"
+        f"comp:\n"
+        f"\t@mkdir -p $(SIM_DIR)\n"
+        f"\tcd $(SIM_DIR) && $(XRUN) -elaborate $(CMP_OPTS)\n"
+        f"run:\n"
+        f"\t@mkdir -p $(SIM_DIR)\n"
+        f"\tcd $(SIM_DIR) && $(XRUN) $(SIM_OPTS)\n"
+        f"\t@echo \"Done.  seed=$(seed)  log=$(SIM_LOG)\"\n"
+        f"clean:\n"
+        f"\trm -rf $(PROJ_DIR)/work/work_*\n"
+        f"wave:\n"
+        f"\tverdi -sv -f $(FLIST) -f $(TBLIST) &\n"
+        f"merge:\n"
+        f"\tcd $(PROJ_DIR)/work && imc -execcmd \"merge work_*/cov_work/scope/* -overwrite -out merged_results\"\n"
+        f"help:\n"
+        f"\t@echo 'make -f makefile_xrun all SV_CASE=<case> [seed=N] [cov=1]'\n"
+        f"\t@echo 'make -f makefile_xrun comp|run|clean|wave|merge'\n"
     )
 
 
@@ -3970,12 +4073,21 @@ def main() -> int:
         plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
     if "questa" in sims:
         plan.append((ip_root / "script" / "makefile_questa", emit_makefile_questa(intake, has_dpi, dpi), False))
-        # If Questa is the only requested sim, make `makefile` an include
-        # shim so `make all SV_CASE=...` still works without -f.
-        if "vcs" not in sims:
+    if "xrun" in sims:
+        plan.append((ip_root / "script" / "makefile_xrun", emit_makefile_xrun(intake, has_dpi, dpi), False))
+    # If VCS isn't requested but another sim is, make `makefile` an include
+    # shim so `make all SV_CASE=...` still works without -f.
+    if "vcs" not in sims:
+        if "questa" in sims:
+            shim_target = "makefile_questa"
+        elif "xrun" in sims:
+            shim_target = "makefile_xrun"
+        else:
+            shim_target = None
+        if shim_target:
             plan.append((ip_root / "script" / "makefile",
-                         "# gen-tb: only Questa requested; delegate to makefile_questa.\n"
-                         "include $(dir $(lastword $(MAKEFILE_LIST)))makefile_questa\n",
+                         f"# gen-tb: VCS not requested; delegate to {shim_target}.\n"
+                         f"include $(dir $(lastword $(MAKEFILE_LIST))){shim_target}\n",
                          False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv",
