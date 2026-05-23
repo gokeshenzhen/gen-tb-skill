@@ -1,5 +1,7 @@
 # gen-tb
 
+![gen-tb workflow cover](assets/gen-tb-cover.png)
+
 A Claude Code skill that generates a complete UVM testbench scaffold for
 a single IP from its specification documents (docx / pdf / md) and
 register table (xlsx / csv / md / IP-XACT). Targets dual personas:
