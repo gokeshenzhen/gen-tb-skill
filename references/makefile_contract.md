@@ -13,7 +13,8 @@
 | `seed` | `$(shell date +1%N)` | random seed; nanosecond-timestamp default for repeatability |
 | `cov` | `0` | set to `1` to enable `tgl+line+cond+fsm+branch` collection |
 | `UVM_VER` | `1.2` | `-ntb_opts uvm-$(UVM_VER)`; honors intake.yaml |
-| `VCS` | `vcs` | simulator executable; override on cmdline if non-standard |
+| `VCS` | `vcs` | simulator executable (VCS makefile); override on cmdline if non-standard |
+| `XRUN` | `xrun` | simulator executable (xrun makefile); override on cmdline if non-standard |
 | `FLIST` | `$(PROJ_DIR)/script/design.f` | RTL filelist |
 | `TBLIST` | `$(PROJ_DIR)/script/tb.f` | tb-side filelist |
 
@@ -75,6 +76,29 @@ Internal helpers (subject to change without notice):
 - `dpi_section`, `extra_cmp` — scaffold.py template fragments
 
 Do not invoke or override these from regression scripts.
+
+## Multi-simulator support (`intake.yaml: simulators`)
+
+`scaffold.py` reads the `simulators` list from `intake.yaml` (default
+`[vcs]`, allowed values `vcs` and `xrun`) and emits one makefile per
+selected simulator side-by-side under `script/`:
+
+| Simulator | File | Invocation |
+|---|---|---|
+| `vcs` | `script/makefile` | `make all SV_CASE=<case>` |
+| `xrun` | `script/makefile_xrun` | `make -f makefile_xrun all SV_CASE=<case>` |
+
+Both files honor the same public variables (`SV_CASE`, `seed`, `cov`,
+`UVM_VER`, `FLIST`, `TBLIST`) and the same targets (`comp`, `run`,
+`all`, `clean`, `wave`, `merge`, `help`). The xrun variant compiles
++ elaborates with `xrun -elaborate` and runs with `xrun -R`, layering
+the Cadence-bundled UVM via `-uvmhome CDNS-$(UVM_VER)`. The DPI
+section is regenerated for xrun using `-cflags` instead of VCS's
+`-CFLAGS`.
+
+`scripts/compile_and_sanity.py` drives VCS only; for xrun-only
+configurations the user runs the mandatory tests manually with
+`make -f makefile_xrun all SV_CASE=<case>`.
 
 ## Why lowercase `makefile`
 
