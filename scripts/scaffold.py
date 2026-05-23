@@ -102,7 +102,7 @@ def _load_yaml(path: Path) -> dict:
 
 _WIDTH_KEY = {"apb": "paddr_width", "ahb": "haddr_width", "axi_lite": "axi_addr_width"}
 _BUILTIN_BUSES = ("apb", "ahb", "axi_lite")
-_SUPPORTED_SIMULATORS = ("vcs", "questa")
+_SUPPORTED_SIMULATORS = ("vcs", "questa", "xrun")
 
 
 def _simulators(intake: dict) -> list[str]:
@@ -182,15 +182,7 @@ def _validate_intake(intake: dict) -> None:
     # Accept legacy singular `simulator:` from older fixtures/intakes.
     if "simulators" not in intake and "simulator" in intake:
         intake["simulators"] = intake.pop("simulator")
-    sims = intake.get("simulators", ["vcs"])
-    if isinstance(sims, str):
-        sims = [sims]
-    if not isinstance(sims, list) or not sims:
-        sys.exit("FATAL: simulators must be a non-empty list (allowed values: vcs, xrun)")
-    bad = [s for s in sims if s not in ("vcs", "xrun")]
-    if bad:
-        sys.exit(f"FATAL: unsupported simulators: {bad!r} (allowed: vcs, xrun)")
-    intake["simulators"] = sims
+    intake["simulators"] = list(sims)
     if bus == "generic":
         # External VIP reuse is not supported in generic mode.
         for key in ("generic_vip_source", "apb_vip_source", "ahb_vip_source", "axi_lite_vip_source"):
@@ -959,6 +951,23 @@ def emit_makefile_xrun(intake: dict, has_dpi: bool, dpi: dict | None) -> str:
         f"\t@echo 'make -f makefile_xrun all SV_CASE=<case> [seed=N] [cov=1]'\n"
         f"\t@echo 'make -f makefile_xrun comp|run|clean|wave|merge'\n"
     )
+
+
+# Single source of truth for per-simulator makefile emission. When adding a
+# new simulator: append it to _SUPPORTED_SIMULATORS, write an emit_makefile_<sim>
+# helper, and add the entry here — plan-builder and CLAUDE.md generator both
+# read this dict, so they pick up the new sim without further edits.
+def _sim_makefile_specs() -> dict[str, tuple[str, Any]]:
+    specs = {
+        "vcs":    ("makefile",        emit_makefile),
+        "questa": ("makefile_questa", emit_makefile_questa),
+        "xrun":   ("makefile_xrun",   emit_makefile_xrun),
+    }
+    # Drift guard: anything in _SUPPORTED_SIMULATORS must have an emitter.
+    missing = [s for s in _SUPPORTED_SIMULATORS if s not in specs]
+    if missing:
+        sys.exit(f"FATAL: _sim_makefile_specs() missing emitter for: {missing}")
+    return specs
 
 
 def emit_tb_f(ip: str, has_dpi: bool, bus: str, vip_source: str, has_ral: bool = True, handshake: dict | None = None) -> str:
@@ -3879,7 +3888,7 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
     sims = _simulators(intake)
     sim_disp = ", ".join(s.upper() if s == "vcs" else s.capitalize() for s in sims)
     # `script/makefile` is always present (either VCS-native, or a shim
-    # that includes makefile_questa when Questa is the only simulator).
+    # that includes makefile_<sim> when VCS is not selected).
     make_prefix = "make"
     lines += [
         "## Current Configuration",
@@ -3903,11 +3912,18 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
         f"{make_prefix} comp",
     ]
     lines += [f"{make_prefix} all SV_CASE={t}" for t in tests]
-    if "vcs" in sims and "questa" in sims:
-        lines += [
-            "# Switch to Questa instead:",
-            f"make -f makefile_questa all SV_CASE={tests[0]}",
-        ]
+    # When VCS is also selected, `make all` uses the VCS makefile by default;
+    # surface each alternate sim explicitly so users see how to switch.
+    if "vcs" in sims:
+        alt_specs = _sim_makefile_specs()
+        for sim in sims:
+            if sim == "vcs":
+                continue
+            alt_fname = alt_specs[sim][0]
+            lines += [
+                f"# Switch to {sim} instead:",
+                f"make -f {alt_fname} all SV_CASE={tests[0]}",
+            ]
     lines += [
         "```",
         "",
@@ -4069,26 +4085,19 @@ def main() -> int:
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(sims), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
     plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral, handshake), False))
-    if "vcs" in sims:
-        plan.append((ip_root / "script" / "makefile", emit_makefile(intake, has_dpi, dpi), False))
-    if "questa" in sims:
-        plan.append((ip_root / "script" / "makefile_questa", emit_makefile_questa(intake, has_dpi, dpi), False))
-    if "xrun" in sims:
-        plan.append((ip_root / "script" / "makefile_xrun", emit_makefile_xrun(intake, has_dpi, dpi), False))
+    sim_specs = _sim_makefile_specs()
+    for sim in sims:
+        fname, emitter = sim_specs[sim]
+        plan.append((ip_root / "script" / fname, emitter(intake, has_dpi, dpi), False))
     # If VCS isn't requested but another sim is, make `makefile` an include
-    # shim so `make all SV_CASE=...` still works without -f.
+    # shim so `make all SV_CASE=...` still works without -f. Delegate to the
+    # first non-vcs sim in the user's preferred order.
     if "vcs" not in sims:
-        if "questa" in sims:
-            shim_target = "makefile_questa"
-        elif "xrun" in sims:
-            shim_target = "makefile_xrun"
-        else:
-            shim_target = None
-        if shim_target:
-            plan.append((ip_root / "script" / "makefile",
-                         f"# gen-tb: VCS not requested; delegate to {shim_target}.\n"
-                         f"include $(dir $(lastword $(MAKEFILE_LIST))){shim_target}\n",
-                         False))
+        shim_target = sim_specs[sims[0]][0]
+        plan.append((ip_root / "script" / "makefile",
+                     f"# gen-tb: VCS not requested; delegate to {shim_target}.\n"
+                     f"include $(dir $(lastword $(MAKEFILE_LIST))){shim_target}\n",
+                     False))
 
     plan.append((ip_root / "top" / f"{ip}_tb_top.sv",
                  emit_tb_top(intake, rtl, handshake, axi_full_signature), False))

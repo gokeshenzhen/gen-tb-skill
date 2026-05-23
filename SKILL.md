@@ -188,7 +188,25 @@ At phase end, if `<ip>/.gen_tb_hooks/` exists, run
 ## Phase 2: Intake
 
 Ask unresolved items in small batches. Questions to ask only when not
-already known:
+already known.
+
+**Preset bundles are allowed** (e.g. "Default config" / "Add C-DPI" /
+"VCS + xrun"), but every preset menu must satisfy:
+
+1. The currently supported simulators (`vcs`, `questa`, `xrun`) must
+   all appear at least once across the offered presets, or be reachable
+   via an explicit "Customize simulators" / "Type something" path that
+   lists them. Never present a simulator-related preset that names only
+   a subset (e.g. listing "VCS / xrun" while omitting Questa) — it
+   misleads the user into thinking the missing one is unsupported.
+2. The same rule applies to any other dimension with >1 first-class
+   value (bus protocol, refmodel language). If a preset hides a
+   first-class option, the menu must include a visible "Customize"
+   escape that surfaces the full set.
+3. The AXI4-full mandatory question (see below) is **never** allowed
+   inside a preset bundle — it must be its own AskUserQuestion turn.
+
+Fields to ask about when not already pinned by Phase 1:
 
 - RTL state: found, external path, generated stub, none
 - bus protocol: APB, AHB, AXI4-Lite, or `generic` (when Phase 1 set
@@ -200,27 +218,30 @@ already known:
   not yet emitted — see `references/refm_dpi.md`)
 - clock/reset: `pclk/presetn`, `hclk/hresetn`, or `aclk/aresetn` frequency, polarity, reset cycles
 - UVM version: default 1.2 unless user specifies otherwise
-- simulator toolchain (multi-select): `vcs`, `xrun`. Default `[vcs]`.
-  Record in `intake.yaml` as `simulators: [vcs]` / `[xrun]` / `[vcs, xrun]`.
-  `vcs` selected → emit `script/makefile`. `xrun` selected → emit
-  `script/makefile_xrun` (invoke via `make -f makefile_xrun ...`).
-  At least one must be selected. `scripts/compile_and_sanity.py` drives
-  VCS by default; for xrun-only configurations, run mandatory tests
-  with `make -f makefile_xrun all SV_CASE=<case>` manually.
+- **simulator toolchain** (multi-select): `vcs`, `questa`, `xrun`.
+  Default `[vcs]` when unanswered. Record in `intake.yaml` as
+  `simulators: [vcs]` / `[vcs, questa]` / `[vcs, xrun]` /
+  `[vcs, questa, xrun]` / etc. At least one must be selected.
+  Per-sim emission:
+  - `vcs` → `script/makefile` (canonical `make all SV_CASE=<case>`).
+  - `questa` → `script/makefile_questa`
+    (`make -f makefile_questa all SV_CASE=<case>`). **Static-only** —
+    gen-tb has no Questa install to validate against; tell the user to
+    verify locally before trusting it in CI.
+  - `xrun` → `script/makefile_xrun`
+    (`make -f makefile_xrun all SV_CASE=<case>`).
+  When `vcs` is not selected, `script/makefile` becomes a thin shim
+  that `include`s whichever sim-specific makefile is present, so the
+  canonical `make all SV_CASE=...` still works. `scripts/compile_and_sanity.py`
+  drives VCS by default; for questa-only or xrun-only configurations,
+  run the mandatory tests with `make -f makefile_<sim> all SV_CASE=<case>`
+  manually. Recommended user-facing wording:
+  *"Which simulators should I generate makefiles for? VCS / Questa /
+  xrun (multi-select; default VCS)."*
 - address width: `paddr_width`, `haddr_width`, or `axi_addr_width`, default 12
 - endianness for multi-word arrays
 - coverage: enabled or skipped
 - required extra smoke tests
-- **simulators**: multi-select VCS and/or Questa. Default `[vcs]` when
-  unanswered. Stored as `simulators: [vcs, questa]` in `intake.yaml`.
-  Scaffold emits one makefile per chosen simulator (`script/makefile`
-  for VCS, `script/makefile_questa` for Questa; if only Questa is
-  chosen, `script/makefile` is a thin shim that includes the Questa
-  one). The Questa flow is **static-only** — gen-tb has no Questa
-  install to validate against; tell the user to verify locally before
-  trusting it in CI. The user-facing question may say:
-  *"Which simulators should I generate makefiles for? VCS / Questa
-  (multi-select; default VCS)."*
 
 ### AXI4-full Mandatory Question
 
@@ -490,7 +511,10 @@ The summary's exact next command depends on `intake.yaml: simulators`:
 # VCS (default)
 cd <ip>/script && source setup.sh && make all SV_CASE=<ip>_sanity_test
 
-# xrun (when only xrun was selected; with both, either works)
+# Questa (when questa is in simulators; with vcs also selected, either works)
+cd <ip>/script && source setup.sh && make -f makefile_questa all SV_CASE=<ip>_sanity_test
+
+# xrun (when xrun is in simulators; with vcs also selected, either works)
 cd <ip>/script && source setup.sh && make -f makefile_xrun all SV_CASE=<ip>_sanity_test
 ```
 
