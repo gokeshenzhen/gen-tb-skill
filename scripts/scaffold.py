@@ -900,14 +900,21 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
             # Only wire sidebands actually present on the DUT. The detector
             # can fire on a single full-AXI signal; assuming all 12 sidebands
             # exist would reference nonexistent ports on partial-shape DUTs.
-            # Fall back to the full set when discovery did not record the
-            # list (older rtl_discovery.yaml without `axi_full_signals`).
-            present = rtl.get("axi_full_signals")
-            if not present:
-                present = ["awlen", "awsize", "awburst", "awid",
-                           "arlen", "arsize", "arburst", "arid",
-                           "bid", "rid", "wlast", "rlast"]
-            extras = [f".{sig} (axi.{sig})" for sig in present]
+            # Discovery records {role: exact_RTL_name} so DUTs that suffix
+            # sidebands (`awlen_i`) get `.awlen_i(axi.awlen)` rather than a
+            # `.awlen(...)` that does not exist on the module.
+            raw = rtl.get("axi_full_signals")
+            if not raw:
+                roles = ["awlen", "awsize", "awburst", "awid",
+                         "arlen", "arsize", "arburst", "arid",
+                         "bid", "rid", "wlast", "rlast"]
+                present = {r: r for r in roles}
+            elif isinstance(raw, dict):
+                present = raw
+            else:
+                # Legacy list-of-roles form: role and port name coincide.
+                present = {r: r for r in raw}
+            extras = [f".{name} (axi.{role})" for role, name in present.items()]
             axi_full_extra = ",\n            " + ",\n            ".join(extras)
         dut_bus = _build_dut_bus(rtl, "axi_lite", "axi", clk_name, rst_name) \
             + axi_full_extra

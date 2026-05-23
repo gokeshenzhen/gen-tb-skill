@@ -24,37 +24,37 @@ module axi_lite_full_degraded #(
     output reg               awready,
     input  wire [ADDR_W-1:0] awaddr,
     input  wire [2:0]        awprot,
-    input  wire [7:0]        awlen,
-    input  wire [2:0]        awsize,
-    input  wire [1:0]        awburst,
-    input  wire [ID_W-1:0]   awid,
+    input  wire [7:0]        awlen_i,
+    input  wire [2:0]        awsize_i,
+    input  wire [1:0]        awburst_i,
+    input  wire [ID_W-1:0]   awid_i,
     // write data
     input  wire              wvalid,
     output reg               wready,
     input  wire [DATA_W-1:0] wdata,
     input  wire [DATA_W/8-1:0] wstrb,
-    input  wire              wlast,
+    input  wire              wlast_i,
     // write response
     output reg               bvalid,
     input  wire              bready,
     output reg  [1:0]        bresp,
-    output reg  [ID_W-1:0]   bid,
+    output reg  [ID_W-1:0]   bid_o,
     // read address
     input  wire              arvalid,
     output reg               arready,
     input  wire [ADDR_W-1:0] araddr,
     input  wire [2:0]        arprot,
-    input  wire [7:0]        arlen,
-    input  wire [2:0]        arsize,
-    input  wire [1:0]        arburst,
-    input  wire [ID_W-1:0]   arid,
+    input  wire [7:0]        arlen_i,
+    input  wire [2:0]        arsize_i,
+    input  wire [1:0]        arburst_i,
+    input  wire [ID_W-1:0]   arid_i,
     // read data
     output reg               rvalid,
     input  wire              rready,
     output reg  [DATA_W-1:0] rdata,
     output reg  [1:0]        rresp,
-    output reg  [ID_W-1:0]   rid,
-    output reg               rlast
+    output reg  [ID_W-1:0]   rid_o,
+    output reg               rlast_o
 );
 
     localparam [DATA_W-1:0] ID_RESET = 32'h000000A5;
@@ -76,7 +76,7 @@ module axi_lite_full_degraded #(
             if (!aw_seen && awvalid && !awready) begin
                 awready   <= 1'b1;
                 aw_addr_r <= awaddr;
-                aw_id_r   <= awid;
+                aw_id_r   <= awid_i;
                 aw_seen   <= 1'b1;
             end else begin
                 awready <= 1'b0;
@@ -109,12 +109,12 @@ module axi_lite_full_degraded #(
         if (!aresetn) begin
             bvalid <= 1'b0;
             bresp  <= 2'b00;
-            bid    <= {ID_W{1'b0}};
+            bid_o  <= {ID_W{1'b0}};
         end else begin
             if (aw_seen && w_seen && !bvalid) begin
                 bvalid <= 1'b1;
                 bresp  <= 2'b00;
-                bid    <= aw_id_r;
+                bid_o  <= aw_id_r;
             end else if (bvalid && bready) begin
                 bvalid <= 1'b0;
             end
@@ -128,15 +128,15 @@ module axi_lite_full_degraded #(
             rvalid  <= 1'b0;
             rdata   <= {DATA_W{1'b0}};
             rresp   <= 2'b00;
-            rid     <= {ID_W{1'b0}};
-            rlast   <= 1'b1;
+            rid_o   <= {ID_W{1'b0}};
+            rlast_o <= 1'b1;
         end else begin
             if (arvalid && !arready && !rvalid) begin
                 arready <= 1'b1;
                 rvalid  <= 1'b1;
                 rresp   <= 2'b00;
-                rid     <= arid;
-                rlast   <= 1'b1;
+                rid_o   <= arid_i;
+                rlast_o <= 1'b1;
                 case (araddr[3:0])
                     4'h0:    rdata <= ID_RESET;
                     4'h4:    rdata <= scratch;

@@ -71,14 +71,20 @@ def classify_bus(top_file: Path) -> str:
 
 def detect_axi_full(top_file: Path) -> tuple[bool, int]:
     """Return (axi_full_signature, id_width). True when the top module
-    exposes full-AXI burst/ID signals despite an AXI-Lite-shaped bus."""
+    exposes full-AXI burst/ID signals despite an AXI-Lite-shaped bus.
+    Tolerates direction-suffixed port names (`awlen_i` matches `awlen`)
+    the same way the rest of the discovery layer does."""
     region = _top_port_region(top_file)
     ports = _port_names(region)
-    if not any(sig in ports for sig in _AXI_FULL_SIGNALS):
+    normalized = {_norm_port(p) for p in ports}
+    if not any(sig in normalized for sig in _AXI_FULL_SIGNALS):
         return False, 1
-    # Derive ID width from an awid/arid declaration like `[3:0] awid`.
+    # Derive ID width from an awid/arid declaration like `[3:0] awid` —
+    # accept an optional `_i`/`_o`/`_in`/`_out` suffix on the port name.
     id_w = 1
-    m = re.search(r"\[\s*(\d+)\s*:\s*0\s*\]\s*(?:ar|aw)id\b", region, flags=re.IGNORECASE)
+    m = re.search(
+        r"\[\s*(\d+)\s*:\s*0\s*\]\s*(?:ar|aw)id(?:_i|_o|_in|_out)?\b",
+        region, flags=re.IGNORECASE)
     if m:
         id_w = int(m.group(1)) + 1
     return True, id_w
@@ -95,18 +101,19 @@ _AXI_FULL_PORT_ROLES = (
 )
 
 
-def detect_axi_full_signals(top_file: Path) -> list[str]:
-    """Return the subset of `_AXI_FULL_PORT_ROLES` actually present on the
-    top module. Used by scaffold.py to wire only existing sidebands instead
-    of every full-AXI signal — partial-shape DUTs would otherwise fail
-    compile when the top references nonexistent ports."""
+def detect_axi_full_signals(top_file: Path) -> dict[str, str]:
+    """Return {canonical_role: exact_RTL_name} for the subset of
+    `_AXI_FULL_PORT_ROLES` actually present on the top module. scaffold.py
+    needs the *exact* port name when wiring `.<dut_port>(axi.<role>)`; a DUT
+    that names sidebands with direction suffixes (e.g. `awlen_i`) matched
+    via `_norm_port` would otherwise get `.awlen(...)` and fail compile."""
     ports = _parse_ports(top_file)
-    present: list[str] = []
+    present: dict[str, str] = {}
     for canon in _AXI_FULL_PORT_ROLES:
         for p in ports:
             lp = p["name"].lower()
             if lp == canon or _norm_port(p["name"]) == canon:
-                present.append(canon)
+                present[canon] = p["name"]
                 break
     return present
 
@@ -403,7 +410,8 @@ def render_rtl_discovery(
             lines.append("axi_full_signature: true")
             lines.append(f"axi_full_id_width: {id_w}")
             present = detect_axi_full_signals(top_file)
-            lines.append("axi_full_signals: [" + ", ".join(present) + "]")
+            entries = ", ".join(f"{role}: {name}" for role, name in present.items())
+            lines.append("axi_full_signals: {" + entries + "}")
 
     if bus == "generic":
         # No standard interface section — bus details live in bus_handshake.yaml.
