@@ -25,7 +25,10 @@ Writes:
     tb/ral/<ip>_<bus>_adapter.sv                    # if generating fresh agent
     test/<ip>_pkg.sv (sanity + reg_access + random_seq + smoke)
     test/sv_list
+    CLAUDE.md                                       # first scaffold only
     work/_gen_audit/scaffold_audit.json
+    work/_gen_audit/unresolved.md                   # seeded placeholder
+    work/_gen_audit/generic_bus_scaffold_diff.patch # generic mode only
 
 Symlink guard: any write target whose realpath escapes ip_root is
 refused with a non-zero exit and a message. No writes are performed
@@ -39,6 +42,7 @@ drive glue) are still deferred to references.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -127,6 +131,9 @@ def _validate_intake(intake: dict) -> None:
             sys.exit("FATAL: bus_direction for generic mode lives in bus_handshake.yaml, not intake.yaml")
     if "register_semantics" in intake:
         intake["register_semantics"] = _yesno(intake["register_semantics"], "register_semantics")
+    if "axi4_full_features" in intake and intake["axi4_full_features"] not in ("none", "present"):
+        sys.exit("FATAL: axi4_full_features must be none|present "
+                 f"(got {intake['axi4_full_features']!r})")
     if bus == "generic":
         # External VIP reuse is not supported in generic mode.
         for key in ("generic_vip_source", "apb_vip_source", "ahb_vip_source", "axi_lite_vip_source"):
@@ -367,6 +374,50 @@ def _clk_rst_names(bus: str, handshake: dict | None = None) -> tuple[str, str]:
         assert handshake is not None
         return handshake["clock"]["name"], handshake["reset"]["name"]
     return "aclk", "aresetn"
+
+
+# Canonical bus role -> generated-interface signal. The generated interface is
+# always canonical; only the DUT side carries the exact discovered RTL name.
+_DUT_BUS_ROLES: dict[str, tuple[str, ...]] = {
+    "apb": ("pclk", "presetn", "psel", "penable", "pwrite", "paddr",
+            "pwdata", "prdata", "pready", "pslverr"),
+    "ahb": ("hclk", "hresetn", "hsel", "haddr", "htrans", "hwrite", "hsize",
+            "hburst", "hprot", "hwdata", "hrdata", "hready", "hresp"),
+    "axi_lite": ("aclk", "aresetn", "awvalid", "awready", "awaddr", "awprot",
+                 "wvalid", "wready", "wdata", "wstrb", "bvalid", "bready",
+                 "bresp", "arvalid", "arready", "araddr", "arprot", "rvalid",
+                 "rready", "rdata", "rresp"),
+}
+
+
+def _dut_port_name(rtl: dict, bus: str, role: str) -> str:
+    """Exact RTL port name for a canonical bus role, as recorded in
+    rtl_discovery.yaml. Falls back to the canonical role name."""
+    section = rtl.get(f"{bus}_interface") or {}
+    val = section.get(role)
+    if isinstance(val, dict):
+        return val.get("name", role)
+    if isinstance(val, str):
+        return val
+    return role
+
+
+def _build_dut_bus(rtl: dict, bus: str, iface: str,
+                    clk_name: str, rst_name: str) -> str:
+    """DUT bus port connections — `.<exact RTL port>(<canonical iface sig>)`.
+    Clock/reset are wired to the top-driven signals, not the interface."""
+    clk_role, rst_role = _DUT_BUS_ROLES[bus][0], _DUT_BUS_ROLES[bus][1]
+    lines = []
+    for role in _DUT_BUS_ROLES[bus]:
+        dut = _dut_port_name(rtl, bus, role)
+        if role == clk_role:
+            rhs = clk_name
+        elif role == rst_role:
+            rhs = rst_name
+        else:
+            rhs = f"{iface}.{role}"
+        lines.append(f".{dut} ({rhs})")
+    return ",\n".join(lines)
 
 
 def _reset_polarity(handshake: dict | None) -> str:
@@ -781,25 +832,13 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
 
     if bus == "apb":
         bus_inst = f"apb_if #(.ADDR_W({addr_w}), .DATA_W(32)) apb (.pclk(pclk), .presetn(presetn));"
-        dut_bus = textwrap.dedent("""\
-            .pclk    (pclk),     .presetn (presetn),
-            .psel    (apb.psel), .penable (apb.penable),
-            .pwrite  (apb.pwrite), .paddr  (apb.paddr),
-            .pwdata  (apb.pwdata), .prdata (apb.prdata),
-            .pready  (apb.pready), .pslverr(apb.pslverr)""").rstrip()
+        dut_bus = _build_dut_bus(rtl, "apb", "apb", clk_name, rst_name)
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
             tb_api::set_vif(apb);""").rstrip()
     elif bus == "ahb":
         bus_inst = f"ahb_if #(.ADDR_W({addr_w}), .DATA_W(32)) ahb (.hclk(hclk), .hresetn(hresetn));"
-        dut_bus = textwrap.dedent("""\
-            .hclk    (hclk),        .hresetn(hresetn),
-            .hsel    (ahb.hsel),    .haddr  (ahb.haddr),
-            .htrans  (ahb.htrans),  .hwrite (ahb.hwrite),
-            .hsize   (ahb.hsize),   .hburst (ahb.hburst),
-            .hprot   (ahb.hprot),   .hwdata (ahb.hwdata),
-            .hrdata  (ahb.hrdata),  .hready (ahb.hready),
-            .hresp   (ahb.hresp)""").rstrip()
+        dut_bus = _build_dut_bus(rtl, "ahb", "ahb", clk_name, rst_name)
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "ahb_vif", ahb);
             tb_api::set_vif(ahb);""").rstrip()
@@ -836,18 +875,8 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
                 ",\n            .bid     (axi.bid),     .rid    (axi.rid)"
                 ",\n            .wlast   (axi.wlast),   .rlast  (axi.rlast)"
             )
-        dut_bus = textwrap.dedent(f"""\
-            .aclk    (aclk),       .aresetn(aresetn),
-            .awvalid (axi.awvalid), .awready(axi.awready),
-            .awaddr  (axi.awaddr),  .awprot (axi.awprot),
-            .wvalid  (axi.wvalid),  .wready (axi.wready),
-            .wdata   (axi.wdata),   .wstrb  (axi.wstrb),
-            .bvalid  (axi.bvalid),  .bready (axi.bready),
-            .bresp   (axi.bresp),
-            .arvalid (axi.arvalid), .arready(axi.arready),
-            .araddr  (axi.araddr),  .arprot (axi.arprot),
-            .rvalid  (axi.rvalid),  .rready (axi.rready),
-            .rdata   (axi.rdata),   .rresp  (axi.rresp){axi_full_extra}""").rstrip()
+        dut_bus = _build_dut_bus(rtl, "axi_lite", "axi", clk_name, rst_name) \
+            + axi_full_extra
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "axi_lite_vif", axi);
             tb_api::set_vif(axi);""").rstrip()
@@ -3391,6 +3420,194 @@ def emit_sv_list(ip: str, vip_source: str, has_ral: bool = True) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Verbatim from references/generic_bus.md — generated CLAUDE.md must carry
+# this in generic mode (the explicit hand-off to the human reviewer).
+_GENERIC_REVIEW_CHECKLIST = """\
+## Generic-mode review checklist
+This testbench was generated in generic-bus mode. The skill cannot
+verify protocol correctness it was never taught. Before relying on
+this tb, review:
+
+- [ ] Driver setup/hold against spec (especially req_ack and strobe
+      modes — verify data is stable on the sampling cycle).
+- [ ] Monitor sample timing matches the spec's data-valid window.
+- [ ] Reset deassert cycle count matches DUT expectation.
+- [ ] tb_api::write/read behavior on back-to-back transactions.
+- [ ] If register_semantics: yes — spot-check 1-2 RW registers have
+      correct addr / width / reset wired through RAL.
+- [ ] Read the assumption list in
+      work/_gen_audit/generic_bus_scaffold_prompt.md — each entry is
+      a place the sub-agent picked the narrower interpretation.
+"""
+
+
+def emit_unresolved_md(ip: str) -> str:
+    """Phase 7 hand-off artifact. scaffold.py seeds it so it is *always*
+    present (per references/directory_layout.md); Phase 5/6/7 append any
+    compile-fix, runtime-fix, or out-of-scope items that remain open."""
+    return textwrap.dedent(f"""\
+        # {ip} — Unresolved Items
+
+        > Phase 7 hand-off artifact. Always present; may be empty.
+        > Seeded by scaffold.py — Phase 5 (compile-fix), Phase 6
+        > (runtime-fix), and Phase 7 append anything left open here.
+
+        _No unresolved items recorded at scaffold time._
+        """)
+
+
+def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
+                   bus: str, direction: str, vip_source: str,
+                   vip_reuse_level: str, has_ral: bool,
+                   axi_full_signature: bool) -> str:
+    """Generated <ip>/CLAUDE.md — Phase 7 hand-off for future agent
+    sessions. Shape follows references/generated_claude_md.md."""
+    if bus == "generic":
+        assert handshake is not None
+        kind = handshake["handshake"]["kind"]
+        bus_desc = (f"generic ({handshake['bus_name']}, {direction}, "
+                    f"handshake.kind={kind})")
+    elif bus == "apb":
+        bus_desc = "APB slave"
+    elif bus == "ahb":
+        bus_desc = f"AHB-Lite {direction}"
+    else:
+        bus_desc = f"AXI4-Lite {direction}"
+        if axi_full_signature:
+            bus_desc += " (degraded mode — full-AXI ports, single-beat only)"
+
+    refm = intake.get("ref_model_language", "skip")
+    rtl_state = intake.get("rtl_state", "found_in_place")
+    reuse_disp = vip_reuse_level if vip_source == "reuse_my_vip" else "n/a"
+
+    tests = [f"{ip}_sanity_test"]
+    if has_ral:
+        tests.append(f"{ip}_reg_access_test")
+        if vip_source == "generate_fresh":
+            tests.append(f"{ip}_random_seq_test")
+    else:
+        tests.append(f"{ip}_responder_smoke_test")
+
+    lines = [
+        f"# {ip} Generated Testbench",
+        "",
+        "This directory was generated by the `gen-tb` skill.",
+        "",
+        "## Ownership",
+        "",
+        "- User-owned, do not edit without explicit request:",
+        "  - `rtl/`",
+        "  - `ref_model/`",
+        "  - `vip/`",
+        "  - `spec/`",
+        "- Generated and safe to regenerate:",
+        "  - `script/`",
+        "  - `top/`",
+        "  - `tb/`",
+        "  - `test/`",
+        "  - `work/_gen_audit/`",
+        "",
+    ]
+    if rtl_state == "generated_stub":
+        lines += [
+            f"`rtl/{ip}_stub.sv` is a placeholder stub, **not** a golden "
+            "implementation.",
+            "",
+        ]
+    lines += [
+        "## Current Configuration",
+        "",
+        f"- IP: `{ip}`",
+        f"- Bus: `{bus_desc}`",
+        "- Simulator: VCS",
+        f"- UVM: `{intake.get('uvm_version', '1.2')}`",
+        f"- Bus VIP source: `{vip_source}`",
+        f"- External VIP reuse level: `{reuse_disp}`",
+        f"- Reference model: `{refm}`",
+        "",
+        "## Commands",
+        "",
+        "```bash",
+        f"cd {ip}/script",
+        "source setup.sh",
+        "make comp",
+    ]
+    lines += [f"make all SV_CASE={t}" for t in tests]
+    lines += [
+        "```",
+        "",
+        "## Important Files",
+        "",
+        "- `work/_gen_audit/intake.yaml`",
+        "- `work/_gen_audit/rtl_discovery.yaml`",
+        "- `work/_gen_audit/spec_normalized/registers.yaml`",
+        "- `work/_gen_audit/spec_normalized/behavior.md`",
+        "- `work/_gen_audit/spec_normalized/parse_report.md`",
+        "- `work/_gen_audit/scaffold_audit.json`",
+        "- `work/_gen_audit/sanity_result.json`",
+        "- `work/_gen_audit/unresolved.md`",
+    ]
+    if bus == "generic":
+        lines += [
+            "- `work/_gen_audit/bus_handshake.yaml` — handshake spec (authoritative)",
+            "- `work/_gen_audit/generic_bus_scaffold_prompt.md` — prompt + assumptions",
+            "- `work/_gen_audit/generic_bus_scaffold_diff.patch` — sub-agent edit diff",
+        ]
+    lines += [
+        "",
+        "## Rules For Future Agents",
+        "",
+        "- Do not edit user RTL, user VIP source, specs, or user "
+        "reference-model source unless the user explicitly asks.",
+        "- Do not weaken sanity or register-access checks to make a run pass.",
+        "- Keep generated scoreboard code under `tb/scoreboard/`, not `test/`.",
+        "- Keep testcase classes and `sv_list` under `test/`.",
+        "- For external VIP reuse, generate project-local glue instead of "
+        "patching the VIP source.",
+        "",
+    ]
+    if bus == "generic":
+        lines += [_GENERIC_REVIEW_CHECKLIST, ""]
+    lines += [
+        "## Known Limitations",
+        "",
+        "See `work/_gen_audit/unresolved.md` and "
+        "`work/_gen_audit/spec_normalized/parse_report.md`.",
+        "",
+        "## Last Verified",
+        "",
+        "- `make comp`: `not run`",
+    ]
+    lines += [f"- `{t}`: `not run`" for t in tests]
+    lines += [
+        "",
+        "_Generated at scaffold time (Phase 4); update after compile/sanity._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def emit_generic_scaffold_diff(files: list[tuple[str, str]]) -> str:
+    """Unified diff of the generic-mode generated files against an empty
+    placeholder skeleton — the audit artifact a future maintainer reads
+    when deciding whether to promote this bus to first-class (SKILL.md
+    Phase 4 / 'Promoting a generic bus' in CLAUDE.md)."""
+    parts = [
+        "# generic_bus_scaffold_diff.patch\n",
+        "# Unified diff of the generic-bus files emitted by scaffold.py\n",
+        "# against an empty placeholder skeleton. Read as the promotion-\n",
+        "# review artifact, or apply from the IP root with `git apply`.\n",
+        "\n",
+    ]
+    for relpath, content in sorted(files):
+        diff = difflib.unified_diff(
+            [], content.splitlines(keepends=True),
+            fromfile=f"a/{relpath}", tofile=f"b/{relpath}",
+        )
+        parts.extend(diff)
+        parts.append("\n")
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -3423,6 +3640,28 @@ def main() -> int:
     # Only meaningful for bus_protocol: axi_lite; routed through rtl_discovery.yaml.
     axi_full_signature = bool(rtl.get("axi_full_signature", False)) and bus == "axi_lite"
     axi_full_id_width = int(rtl.get("axi_full_id_width", 1)) if axi_full_signature else 1
+    # Deterministic backstop for the SKILL.md Phase-2 mandatory question. When
+    # the DUT exposes full-AXI ports, scaffold must NOT silently emit a degraded
+    # environment — it requires explicit intake evidence that the user answered
+    # "no bursts/IDs/outstanding". Missing or "present" => refuse (treat-as-Yes).
+    if axi_full_signature:
+        answer = intake.get("axi4_full_features")
+        if answer not in ("none", "present"):
+            sys.exit(
+                "FATAL: rtl_discovery.yaml has axi_full_signature: true but "
+                "intake.yaml is missing the mandatory axi4_full_features answer. "
+                "Ask the user exactly 'Does this DUT use bursts (>1 beat), IDs, "
+                "or outstanding?' and record axi4_full_features: none (No -> "
+                "degraded AXI4-Lite) or axi4_full_features: present (Yes -> out "
+                "of scope). Unanswered is treated as Yes; do not scaffold."
+            )
+        if answer == "present":
+            sys.exit(
+                "FATAL: AXI4-full (bursts/IDs/outstanding) is out of scope "
+                "(intake.yaml records axi4_full_features: present). Write "
+                "work/_gen_audit/unresolved.md per SKILL.md Phase 2 and stop; "
+                "do not scaffold an out-of-scope environment."
+            )
 
     regs_path = audit / "spec_normalized" / "registers.yaml"
     if has_ral:
@@ -3535,6 +3774,32 @@ def main() -> int:
     if bus == "generic":
         plan.append((audit / "generic_bus_scaffold_prompt.md",
                      _generic_scaffold_prompt(intake, handshake), False))
+        # Promotion-review artifact: unified diff of the generic-bus files
+        # emitted above against an empty skeleton (SKILL.md Phase 4).
+        prefix = handshake["bus_name"]
+        generic_files = [
+            (str(t.relative_to(ip_root)), c)
+            for (t, c, _) in plan
+            if f"{prefix}_agt_top" in t.parts
+            or t.name in (f"{prefix}_if.sv", f"{ip}_{prefix}_adapter.sv",
+                          "tb_api_primitives.svh", f"{ip}_tb_top.sv")
+        ]
+        plan.append((audit / "generic_bus_scaffold_diff.patch",
+                     emit_generic_scaffold_diff(generic_files), False))
+
+    # ---- Phase 7 hand-off artifacts (always present in the deliverable) ----
+    # CLAUDE.md: written on first scaffold only; if it already exists (user may
+    # have edited it), emit CLAUDE.md.new instead of clobbering edits.
+    claude_md = ip_root / "CLAUDE.md"
+    claude_target = claude_md if not claude_md.exists() else ip_root / "CLAUDE.md.new"
+    plan.append((claude_target,
+                 emit_claude_md(ip, intake, rtl, handshake, bus, direction,
+                                vip_source, vip_reuse_level, has_ral,
+                                axi_full_signature), False))
+    # unresolved.md: seed a placeholder only if Phase 5/6/7 has not written it.
+    unresolved_md = audit / "unresolved.md"
+    if not unresolved_md.exists():
+        plan.append((unresolved_md, emit_unresolved_md(ip), False))
 
     # ---- Symlink-guard ALL targets first; refuse any if any fails ----
     resolved = []

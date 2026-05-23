@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections import OrderedDict
 from pathlib import Path
 
 
@@ -90,6 +91,218 @@ def candidate_signals(top_file: Path) -> list[str]:
     hint = ("valid", "ready", "ack", "req", "stb", "data", "addr", "wr",
             "rd", "en", "sel", "cyc", "last", "strb")
     return [p for p in ports if any(h in p for h in hint)]
+
+
+# ---------------------------------------------------------------------------
+# Exact port discovery (G: rtl_discovery records exact RTL names/widths)
+# ---------------------------------------------------------------------------
+# Canonical bus role -> common RTL port-name variants used ONLY for matching.
+# Matching is case-insensitive and tolerates _i/_o/_in/_out direction suffixes
+# and vendor prefixes (`s_axi_awaddr`); the emitted rtl_discovery.yaml always
+# carries the EXACT RTL port name and width, never the canonical form.
+_PORT_VARIANTS: dict[str, dict[str, list[str]]] = {
+    "apb": {
+        "pclk":    ["clk", "apb_clk", "clk_in"],
+        "presetn": ["preset_n", "rst_n", "resetn", "rstn", "areset_n"],
+        "psel":    ["sel", "apb_sel"],
+        "penable": ["enable", "apb_enable"],
+        "pwrite":  ["write", "wr", "apb_write"],
+        "paddr":   ["addr", "apb_addr", "address"],
+        "pwdata":  ["wdata", "apb_wdata", "wr_data", "write_data", "writedata"],
+        "prdata":  ["rdata", "apb_rdata", "rd_data", "read_data", "readdata"],
+        "pready":  ["ready", "apb_ready"],
+        "pslverr": ["slverr", "error", "err", "apb_slverr"],
+    },
+    "ahb": {
+        "hclk":    ["clk", "ahb_clk"],
+        "hresetn": ["hreset_n", "rst_n", "resetn", "rstn"],
+        "hsel":    ["sel", "ahb_hsel"],
+        "haddr":   ["addr", "ahb_addr", "address"],
+        "htrans":  ["trans"],
+        "hwrite":  ["write", "wr"],
+        "hsize":   ["size"],
+        "hburst":  ["burst"],
+        "hprot":   ["prot"],
+        "hwdata":  ["wdata", "ahb_wdata", "write_data"],
+        "hrdata":  ["rdata", "ahb_rdata", "read_data"],
+        "hready":  ["ready", "ahb_ready"],
+        "hresp":   ["resp", "error"],
+    },
+    "axi_lite": {
+        "aclk":    ["clk", "axi_clk"],
+        "aresetn": ["areset_n", "rst_n", "resetn", "rstn"],
+        "awvalid": ["aw_valid"], "awready": ["aw_ready"],
+        "awaddr":  ["aw_addr"],  "awprot":  ["aw_prot"],
+        "wvalid":  ["w_valid"],  "wready":  ["w_ready"],
+        "wdata":   ["w_data"],   "wstrb":   ["w_strb", "wstb"],
+        "bvalid":  ["b_valid"],  "bready":  ["b_ready"],
+        "bresp":   ["b_resp"],
+        "arvalid": ["ar_valid"], "arready": ["ar_ready"],
+        "araddr":  ["ar_addr"],  "arprot":  ["ar_prot"],
+        "rvalid":  ["r_valid"],  "rready":  ["r_ready"],
+        "rdata":   ["r_data"],   "rresp":   ["r_resp"],
+    },
+}
+
+# Per-bus role order for emitting the *_interface block.
+_BUS_ROLES: dict[str, tuple[str, ...]] = {
+    "apb": ("pclk", "presetn", "psel", "penable", "pwrite", "paddr",
+            "pwdata", "prdata", "pready", "pslverr"),
+    "ahb": ("hclk", "hresetn", "hsel", "haddr", "htrans", "hwrite", "hsize",
+            "hburst", "hprot", "hwdata", "hrdata", "hready", "hresp"),
+    "axi_lite": ("aclk", "aresetn", "awvalid", "awready", "awaddr", "awprot",
+                 "wvalid", "wready", "wdata", "wstrb", "bvalid", "bready",
+                 "bresp", "arvalid", "arready", "araddr", "arprot", "rvalid",
+                 "rready", "rdata", "rresp"),
+}
+
+# Roles emitted as `{name, width}`; the value is the fallback width used only
+# when the RTL width could not be resolved. All other roles emit a bare name.
+_WIDTH_ROLES: dict[str, int] = {
+    "paddr": 12, "pwdata": 32, "prdata": 32,
+    "haddr": 12, "hwdata": 32, "hrdata": 32,
+    "awaddr": 12, "araddr": 12, "wdata": 32, "rdata": 32, "wstrb": 4,
+}
+
+_DIR_SUFFIX = re.compile(r"_(i|o|in|out)$")
+
+
+def _module_text(top_file: Path) -> str:
+    if not top_file.exists():
+        return ""
+    text = top_file.read_text(errors="ignore")
+    text = re.sub(r"//[^\n]*", "", text)
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+
+def _verilog_int(tok: str) -> int | None:
+    t = tok.strip().replace("_", "")
+    for prefix, base in (("h", 16), ("b", 2), ("d", 10)):
+        m = re.match(rf"^(?:\d+)?'[{prefix}{prefix.upper()}]([0-9a-fA-F]+)$", t)
+        if m:
+            try:
+                return int(m.group(1), base)
+            except ValueError:
+                return None
+    return int(t) if re.fullmatch(r"\d+", t) else None
+
+
+def _resolve_params(text: str) -> dict[str, int]:
+    """Collect `parameter`/`localparam` NAME = <int> bindings for width math."""
+    params: dict[str, int] = {}
+    for m in re.finditer(r"\b(?:parameter|localparam)\b([^;]*)", text):
+        for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*([0-9a-fA-F'_]+)", m.group(1)):
+            val = _verilog_int(pm.group(2))
+            if val is not None:
+                params[pm.group(1)] = val
+    return params
+
+
+def _eval_dim(expr: str, params: dict[str, int]) -> int | None:
+    e = expr.strip()
+    for name, val in sorted(params.items(), key=lambda kv: -len(kv[0])):
+        e = re.sub(rf"\b{re.escape(name)}\b", str(val), e)
+    if not e or not re.fullmatch(r"[0-9\s+\-*/()]+", e):
+        return None
+    try:
+        return int(eval(e, {"__builtins__": {}}, {}))  # guarded: digits/ops only
+    except Exception:
+        return None
+
+
+def _width_of(dim: str | None, params: dict[str, int]) -> int | None:
+    """Resolve a `[hi:lo]` packed dimension to a bit width, or None."""
+    if not dim:
+        return 1
+    inner = dim.strip().strip("[]")
+    if ":" not in inner:
+        return 1
+    hi_s, lo_s = inner.split(":", 1)
+    hi, lo = _eval_dim(hi_s, params), _eval_dim(lo_s, params)
+    if hi is None or lo is None:
+        return None
+    return abs(hi - lo) + 1
+
+
+def _parse_ports(top_file: Path) -> list[dict]:
+    """Best-effort parse of the top module's ports -> [{name, dir, width}].
+    Handles ANSI headers and non-ANSI body declarations alike."""
+    text = _module_text(top_file)
+    if not text:
+        return []
+    params = _resolve_params(text)
+    ports: "OrderedDict[str, dict]" = OrderedDict()
+    pat = re.compile(
+        r"\b(input|output|inout)\b\s*"
+        r"(?:wire|reg|logic|var|tri|bit)?\s*(?:signed\s*)?"
+        r"(\[[^\]]+\])?\s*"
+        r"([A-Za-z_]\w*(?:\s*,\s*(?!input\b|output\b|inout\b)[A-Za-z_]\w*)*)"
+    )
+    for m in pat.finditer(text):
+        direction = {"input": "in", "output": "out", "inout": "inout"}[m.group(1)]
+        width = _width_of(m.group(2), params)
+        for nm in re.split(r"\s*,\s*", m.group(3).strip()):
+            if nm and nm not in ports:
+                ports[nm] = {"name": nm, "dir": direction, "width": width}
+    return list(ports.values())
+
+
+def _norm_port(name: str) -> str:
+    """Lowercase and drop a trailing _i/_o/_in/_out direction suffix."""
+    return _DIR_SUFFIX.sub("", name.lower())
+
+
+def _match_one(canon: str, variants: list[str],
+               ports: list[dict], used: set[str]) -> dict | None:
+    cands = [canon, *variants]
+    best, best_score = None, 0
+    for p in ports:
+        if p["name"] in used:
+            continue
+        lp = p["name"].lower()
+        npn = _norm_port(p["name"])
+        score = 0
+        for c in cands:
+            if lp == c:
+                score = max(score, 4)
+            elif npn == c:
+                score = max(score, 3)
+            elif lp.endswith("_" + c):
+                score = max(score, 2)
+            elif npn.endswith("_" + c):
+                score = max(score, 1)
+        if score > best_score:
+            best, best_score = p, score
+    return best
+
+
+def match_bus_ports(bus: str, top_file: Path) -> dict[str, dict]:
+    """Map each canonical bus role to the EXACT discovered RTL port
+    ({name, dir, width}). Roles with no confident match are omitted so the
+    caller can fall back to the canonical name and flag low confidence."""
+    variants = _PORT_VARIANTS.get(bus)
+    if not variants:
+        return {}
+    ports = _parse_ports(top_file)
+    used: set[str] = set()
+    matched: dict[str, dict] = {}
+    for role, vs in variants.items():
+        hit = _match_one(role, vs, ports, used)
+        if hit is not None:
+            used.add(hit["name"])
+            matched[role] = hit
+    return matched
+
+
+def _port_line(role: str, matched: dict[str, dict]) -> str:
+    """Render one `*_interface` entry with the exact RTL name (and width)."""
+    hit = matched.get(role)
+    name = hit["name"] if hit else role
+    if role in _WIDTH_ROLES:
+        width = (hit["width"] if hit and hit.get("width") else None) \
+            or _WIDTH_ROLES[role]
+        return f"  {role}: {{name: {name}, width: {width}}}"
+    return f"  {role}: {name}"
 
 
 def _ordered_rtl_files(rtl_files: list[Path], top: str, ip_root: Path) -> list[Path]:
@@ -173,67 +386,21 @@ def render_rtl_discovery(
                 lines.append("  candidate_signals: [" + ", ".join(cands) + "]")
         lines += [*_default_other_pads(ip_name)]
         return "\n".join(lines) + "\n"
-    if bus == "axi_lite":
-        lines += [
-            "axi_lite_interface:",
-            f"  direction: {direction}",
-            "  aclk: aclk",
-            "  aresetn: aresetn",
-            "  awvalid: awvalid",
-            "  awready: awready",
-            "  awaddr:  {name: awaddr,  width: 12}",
-            "  awprot:  awprot",
-            "  wvalid:  wvalid",
-            "  wready:  wready",
-            "  wdata:   {name: wdata,  width: 32}",
-            "  wstrb:   {name: wstrb,  width: 4}",
-            "  bvalid:  bvalid",
-            "  bready:  bready",
-            "  bresp:   bresp",
-            "  arvalid: arvalid",
-            "  arready: arready",
-            "  araddr:  {name: araddr,  width: 12}",
-            "  arprot:  arprot",
-            "  rvalid:  rvalid",
-            "  rready:  rready",
-            "  rdata:   {name: rdata,  width: 32}",
-            "  rresp:   rresp",
-            *_default_other_pads(ip_name),
-        ]
-    elif bus == "ahb":
-        lines += [
-            "ahb_interface:",
-            f"  direction: {direction}",
-            "  hclk: hclk",
-            "  hresetn: hresetn",
-            "  hsel: hsel",
-            "  haddr:  {name: haddr,  width: 12}",
-            "  htrans: htrans",
-            "  hwrite: hwrite",
-            "  hsize: hsize",
-            "  hburst: hburst",
-            "  hprot: hprot",
-            "  hwdata: {name: hwdata, width: 32}",
-            "  hrdata: {name: hrdata, width: 32}",
-            "  hready: hready",
-            "  hresp: hresp",
-            *_default_other_pads(ip_name),
-        ]
-    else:
-        lines += [
-            "apb_interface:",
-            "  pclk: pclk",
-            "  presetn: presetn",
-            "  psel: psel",
-            "  penable: penable",
-            "  pwrite: pwrite",
-            "  paddr:  {name: paddr,  width: 12}",
-            "  pwdata: {name: pwdata, width: 32}",
-            "  prdata: {name: prdata, width: 32}",
-            "  pready: pready",
-            "  pslverr: pslverr",
-            *_default_other_pads(ip_name),
-        ]
+    # Interface block — exact RTL port names/widths matched from the top
+    # module. Roles with no confident match fall back to the canonical name
+    # (see _port_line); unmatched roles are recorded so a reviewer can check.
+    matched = match_bus_ports(bus, top_file)
+    section = {"apb": "apb_interface", "ahb": "ahb_interface",
+               "axi_lite": "axi_lite_interface"}[bus]
+    lines.append(f"{section}:")
+    if bus in ("ahb", "axi_lite"):
+        lines.append(f"  direction: {direction}")
+    for role in _BUS_ROLES[bus]:
+        lines.append(_port_line(role, matched))
+    unmatched = [r for r in _BUS_ROLES[bus] if r not in matched]
+    if unmatched:
+        lines.append("  unmatched_roles: [" + ", ".join(unmatched) + "]")
+    lines += [*_default_other_pads(ip_name)]
     return "\n".join(lines) + "\n"
 
 

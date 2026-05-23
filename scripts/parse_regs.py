@@ -307,7 +307,14 @@ def _rows_from_ipxact(path: Path, report: ParseReport) -> list[dict[str, Any]]:
             bit_offset = _parse_int(_child_text(field, "bitOffset", "0"), 0)
             bit_width = _parse_int(_child_text(field, "bitWidth", "1"), 1)
             faccess = _child_text(field, "access", access)
-            rows.append({
+            # Field-level reset: use the field's own <reset><value> when the
+            # IP-XACT declares one; otherwise leave it unset so the register
+            # row resolves it by slicing the register-level reset (G8). A
+            # hardcoded 0 here would masquerade as an explicit field reset.
+            freset_node = next(
+                (c for c in field.iter() if _local_name(c.tag) == "reset"), None
+            )
+            row = {
                 "name": reg_name,
                 "offset": offset,
                 "width": width,
@@ -316,10 +323,12 @@ def _rows_from_ipxact(path: Path, report: ParseReport) -> list[dict[str, Any]]:
                 "field_name": fname,
                 "field_bits": f"{bit_offset + bit_width - 1}:{bit_offset}",
                 "field_access": faccess,
-                "field_reset": 0,
                 "desc": _child_text(field, "description", ""),
                 "_source": f"{path.name}:{reg_name}.{fname}",
-            })
+            }
+            if freset_node is not None:
+                row["field_reset"] = _child_text(freset_node, "value", "0")
+            rows.append(row)
     report.selected_sources.append(f"{path.name}: parsed IP-XACT XML")
     return rows
 
@@ -350,7 +359,16 @@ def _row_to_reg(row: dict[str, Any], report: ParseReport) -> tuple[tuple[str, in
     field_name = _sv_id(row.get("field_name"), "data")
     field_bits = _normalize_bits(row.get("field_bits"), width)
     field_access = _normalize_access(row.get("field_access"), access)
-    field_reset = _parse_int(row.get("field_reset"), 0)
+    # G8: field-level reset wins only when explicitly given. When the row
+    # omits it, derive the field's reset by slicing the register-level reset
+    # for this field's bit range — defaulting to 0 would turn an absent
+    # field reset into an explicit zero and trigger false reset mismatches.
+    raw_field_reset = row.get("field_reset")
+    if raw_field_reset in (None, ""):
+        f_lsb, f_width = _bit_lsb_width(field_bits)
+        field_reset = (reset >> f_lsb) & ((1 << f_width) - 1)
+    else:
+        field_reset = _parse_int(raw_field_reset, 0)
     reg = {
         "name": name,
         "offset": offset,

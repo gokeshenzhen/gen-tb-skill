@@ -185,15 +185,20 @@ already known:
 
 When `rtl_discovery.yaml` has `axi_full_signature: true`, ask exactly:
 *"Does this DUT use bursts (>1 beat), IDs, or outstanding?"* This
-question is mandatory and cannot be skipped.
+question is mandatory and cannot be skipped. Record the answer in
+`intake.yaml` as `axi4_full_features: none` (No) or
+`axi4_full_features: present` (Yes) — `scaffold.py` refuses to run
+without it.
 
-- Yes → hard refuse. Write `unresolved.md` pointing to planned
-  AXI4-full work and exit. Do not enter Phase 3.
-- No → route to the built-in AXI4-Lite path. Phase 4 must emit a
-  monitor-side assertion that `AWLEN == 0 && ARLEN == 0`, so any
-  later burst use fails loud at sim time.
-- Unanswered / skipped → treat as Yes (refuse). Generative defaults
-  are conservative.
+- Yes (`axi4_full_features: present`) → hard refuse. Write
+  `unresolved.md` pointing to planned AXI4-full work and exit. Do not
+  enter Phase 3.
+- No (`axi4_full_features: none`) → route to the built-in AXI4-Lite
+  path. Phase 4 must emit a monitor-side assertion that
+  `AWLEN == 0 && ARLEN == 0`, so any later burst use fails loud at
+  sim time.
+- Unanswered / skipped → treat as Yes (refuse). `scaffold.py` exits
+  FATAL when `axi_full_signature: true` and the intake key is absent.
 
 ### Generic Bus Intake Sub-Batch
 
@@ -398,7 +403,9 @@ For generic mode with `direction: master`, the
 
 If a mandatory runtime test fails, re-enter Phase 5 with a runtime-fix
 sub-agent for up to 3 attempts in built-in mode, **5 in generic mode**.
-Save results to `work/_gen_audit/sanity_result.json`.
+Save results to `work/_gen_audit/sanity_result.json` — run
+`python3 scripts/compile_and_sanity.py --ip-root <ip> --sanity`, which
+compiles, runs every test in `test/sv_list`, and writes that file.
 
 For algorithmic IPs with a reference model, also run one end-to-end
 smoke test that proves scoreboard/refmodel integration.

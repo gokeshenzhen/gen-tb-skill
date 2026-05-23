@@ -16,6 +16,9 @@ reset:
   aresetn_duration_cycles: 16
 uvm_version: '1.2'
 axi_addr_width: 12
+# Phase-2 mandatory answer: the DUT exposes full-AXI ports but services
+# single-beat transfers only -> degraded AXI4-Lite path is authorized.
+axi4_full_features: none
 endianness: lsb_first
 coverage:
   enable: false
