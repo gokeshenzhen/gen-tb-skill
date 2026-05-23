@@ -71,6 +71,24 @@ deliverable.
 6. Sanity: run mandatory tests and runtime-fix loop if needed
 7. Hand-off: write `CLAUDE.md`, `unresolved.md`, and concise summary
 
+### Pipeline Hooks (Optional)
+
+After each phase finishes writing its audit artifacts, call:
+
+```bash
+python3 scripts/hooks.py <phase> <ip_root>
+```
+
+with `<phase>` ∈ `{discover, intake, normalize, scaffold, compile_fix,
+sanity, handoff}`. The script looks for
+`<ip_root>/.gen_tb_hooks/<phase>[.strict].{py,sh}` and is a no-op when
+absent (zero cost in the common case). Non-strict hook failures are
+logged to `work/_gen_audit/hooks/<phase>.log` and do not block the
+pipeline; `.strict.` hooks abort the phase on non-zero exit. Hooks
+receive a JSON payload on stdin and `GEN_TB_PHASE` / `GEN_TB_IP_ROOT` /
+`GEN_TB_AUDIT_DIR` in env. Do not invoke hooks before audit artifacts
+for the phase are on disk.
+
 ## Phase 1: Discover
 
 ### IP Selection
@@ -164,6 +182,9 @@ Load `references/apb_external_vip.md`, `references/ahb_external_vip.md`,
 or `references/axi_lite_external_vip.md` before implementing or fixing
 external VIP reuse.
 
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py discover <ip_root>`.
+
 ## Phase 2: Intake
 
 Ask unresolved items in small batches. Questions to ask only when not
@@ -236,6 +257,9 @@ Every question turn must include an abort/restart option. Save partial
 answers to `work/_gen_audit/intake.yaml` and `bus_handshake.yaml`, and
 resume from them if present.
 
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py intake <ip_root>`.
+
 ## Phase 3: Normalize
 
 Create:
@@ -261,6 +285,9 @@ ambiguous aliases, and contradictions. The user must be told to read
 
 Load `references/spec_parsing.md` and
 `references/registers_yaml_schema.md` for schemas and parser rules.
+
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py normalize <ip_root>`.
 
 ## Phase 4: Scaffold
 
@@ -327,6 +354,9 @@ When `bus_protocol == generic`:
    These are the audit artifacts a future maintainer reads when
    deciding whether to promote this bus to a first-class reference.
 
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py scaffold <ip_root>`.
+
 ## Phase 5: Compile-Fix
 
 Run:
@@ -373,6 +403,9 @@ signatures must not change.
 Load `references/sub_agent_compile_fix.md` for the prompt template and
 constraints.
 
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py compile_fix <ip_root>`.
+
 ## Phase 6: Sanity
 
 Run mandatory tests:
@@ -416,6 +449,9 @@ smoke test that proves scoreboard/refmodel integration.
 For `drive_with_vip`, also run the generated external-VIP read/write
 smoke test.
 
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py sanity <ip_root>`.
+
 ## Phase 7: Hand-Off
 
 Write:
@@ -438,6 +474,10 @@ cd <ip>/script && source setup.sh && make all SV_CASE=<ip>_sanity_test
 ```
 
 Load `references/generated_claude_md.md` for `CLAUDE.md`.
+
+At phase end, if `<ip>/.gen_tb_hooks/` exists, run
+`python3 scripts/hooks.py handoff <ip_root>`. Run this last so a
+notification/dashboard hook sees the final tree.
 
 ## Hard Constraints
 
