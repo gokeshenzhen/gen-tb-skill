@@ -3234,28 +3234,29 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: d
 
     if has_ral:
         addr_consts = []
+        name_w = max((len(r["name"]) for r in regs), default=1)
         for r in regs:
             off = r["offset"] if isinstance(r["offset"], int) else int(r["offset"], 16)
             addr_consts.append(
-                f"    localparam logic [{addr_w-1}:0] ADDR_{r['name']} = {addr_w}'h{off:03X};"
+                f"localparam logic [{addr_w-1}:0] ADDR_{r['name']:<{name_w}} = {addr_w}'h{off:03X};"
             )
         addr_consts_str = "\n".join(addr_consts)
 
         readable_regs = regs[:8]
         reg_reads = "\n".join(
-            f'                tb_api::read(ADDR_{r["name"]}, rd); '
+            f'    tb_api::read(ADDR_{r["name"]}, rd); '
             f'`uvm_info(tag, $sformatf("{r["name"]} = 0x%08h", rd), UVM_LOW)'
             for r in readable_regs
         )
         legal_addr_list = ", ".join(f"ADDR_{r['name']}" for r in readable_regs)
 
-        helper_tasks = textwrap.dedent(f"""\
-            task automatic run_reg_access_reads(input string tag);
-                logic [tb_api::DATA_W-1:0] rd;
-                `uvm_info(tag, "reading all registers", UVM_LOW)
-{reg_reads}
-            endtask
-            """)
+        helper_tasks = (
+            "task automatic run_reg_access_reads(input string tag);\n"
+            "    logic [tb_api::DATA_W-1:0] rd;\n"
+            "    `uvm_info(tag, \"reading all registers\", UVM_LOW)\n"
+            f"{reg_reads}\n"
+            "endtask\n"
+        )
     else:
         addr_consts_str = ""
         legal_addr_list = ""
@@ -3342,14 +3343,14 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: d
 
     smoke_test = ""
     if dpi:
-        smoke_test = "    // DPI smoke test generation: see references/refm_dpi.md.\n"
-        smoke_test += "    // v1.1 stub — hand-write the smoke test for now using tb_api::wait_status_flag.\n"
+        smoke_test = "// DPI smoke test generation: see references/refm_dpi.md.\n"
+        smoke_test += "// v1.1 stub — hand-write the smoke test for now using tb_api::wait_status_flag.\n"
 
     vip_source = _vip_source(intake) if bus != "generic" else "generate_fresh"
-    agent_import = f"    import {prefix}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
-    ral_import = f"    import {ip}_ral_pkg::*;" if has_ral else ""
+    agent_import = f"import {prefix}_agt_pkg::*;" if vip_source == "generate_fresh" else ""
+    ral_import = f"import {ip}_ral_pkg::*;" if has_ral else ""
     adapter_import = (
-        f"    import {ip}_{prefix}_adapter_pkg::*;"
+        f"import {ip}_{prefix}_adapter_pkg::*;"
         if vip_source == "generate_fresh" and has_ral
         else ""
     )
@@ -3434,27 +3435,37 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: d
             endclass
             """)
 
-    return textwrap.dedent(f"""\
-        `ifndef {ip.upper()}_PKG_SV
-        `define {ip.upper()}_PKG_SV
-        package {ip}_pkg;
-            import uvm_pkg::*;
-        {agent_import}
-        {ral_import}
-        {adapter_import}
-        {f'    import {ip}_ref_pkg::*;' if dpi else ''}
-            `include "uvm_macros.svh"
+    ref_import = f"import {ip}_ref_pkg::*;" if dpi else ""
+    import_lines = [
+        line for line in (
+            "import uvm_pkg::*;",
+            agent_import,
+            ral_import,
+            adapter_import,
+            ref_import,
+        ) if line
+    ]
+    import_block = "\n".join(import_lines) + "\n" + '`include "uvm_macros.svh"'
 
-        {addr_consts_str}
+    blocks = [b.rstrip() for b in (
+        import_block,
+        addr_consts_str,
+        helper_tasks,
+        sanity_test,
+        reg_access_test,
+        random_seq_body,
+        smoke_test,
+    ) if b.strip()]
+    body = textwrap.indent("\n\n".join(blocks) + "\n", "    ")
 
-        {helper_tasks}
-        {sanity_test}
-        {reg_access_test}
-        {random_seq_body}
-        {smoke_test}
-        endpackage
-        `endif
-        """)
+    return (
+        f"`ifndef {ip.upper()}_PKG_SV\n"
+        f"`define {ip.upper()}_PKG_SV\n"
+        f"package {ip}_pkg;\n"
+        f"{body}"
+        f"endpackage\n"
+        f"`endif\n"
+    )
 
 
 def emit_sv_list(ip: str, vip_source: str, has_ral: bool = True,
