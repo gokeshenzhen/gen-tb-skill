@@ -14,9 +14,10 @@
 ├── ref_model/                            user-supplied DPI C/C++/Py sources (input)
 │   └── (user files, gen-tb never writes here)
 ├── script/
-│   ├── makefile                          lowercase; the public API
+│   ├── makefile                          lowercase; the public API (VCS, or shim when Questa-only)
+│   ├── makefile_questa                   (optional) Questa vlog/vsim flow, when intake.yaml lists `questa`
 │   ├── setup.sh                          walks to .prj_top; exports PROJ_DIR + WORK_DIR + UVM_HOME
-│   ├── check_env.sh                      validates vcs / UVM_HOME / PROJ_DIR pre-compile
+│   ├── check_env.sh                      validates the selected SIM (vcs|questa) + PROJ_DIR pre-compile
 │   ├── design.f                          DUT filelist; uses $PROJ_DIR/<actual-rtl-dir>
 │   ├── tb.f                              tb-side filelist + incdirs (decouples from makefile)
 │   └── vcm.cfg                           coverage scope (optional)
