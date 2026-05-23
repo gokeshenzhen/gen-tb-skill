@@ -95,7 +95,7 @@ The skill always materializes the same directory shape (modeled on
 | Bus protocol (built-in) | APB slave, AHB-Lite (slave or master), AXI4-Lite (slave or master) |
 | Bus protocol (generic fallback) | any single-channel request/response bus the scaffold sub-agent can infer — `req_ack` / `valid_ready` / `strobe` / `custom` handshakes |
 | AXI4 full | out of scope; DUTs with AXI burst/ID ports that only do single-beat transfers get an AXI4-Lite degraded-mode environment with `AWLEN/ARLEN==0` assertions |
-| Simulator | VCS only (xrun / questa planned) |
+| Simulator | VCS, Questa (vlog/vsim — static-only, see SKILL.md note), xrun (Cadence Xcelium); multi-select via `intake.yaml: simulators` |
 | Ref model lang | none / SV / C-DPI; Python-DPI schema only |
 | RAL input | xlsx / csv / md tables / IP-XACT (optional — `register_semantics: no` for non-register buses) |
 | Spec input | docx / pdf / md |

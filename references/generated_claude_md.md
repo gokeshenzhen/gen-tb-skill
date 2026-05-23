@@ -51,7 +51,7 @@ not a golden implementation.
 
 - IP: `<ip>`
 - Bus: `<APB slave | AHB-Lite slave | AHB-Lite master | AXI4-Lite slave | AXI4-Lite master | generic (<bus_name>, <direction>, handshake.kind=<kind>)>`
-- Simulator: VCS
+- Simulator(s): `<comma-separated subset of: VCS | Questa | xrun>`  (matches `intake.yaml: simulators`; Questa note if present)
 - UVM: `<uvm_version>`
 - Bus VIP source: `<generate_fresh | reuse_my_vip>`
 - External VIP reuse level: `<import_only | drive_with_vip | n/a>`
@@ -66,6 +66,11 @@ source setup.sh
 make comp
 make all SV_CASE=<ip>_sanity_test
 make all SV_CASE=<ip>_reg_access_test
+# When vcs is also selected, switch to a non-vcs sim via:
+#   make -f makefile_questa all SV_CASE=<ip>_sanity_test
+#   make -f makefile_xrun   all SV_CASE=<ip>_sanity_test
+# When vcs is not selected, `script/makefile` is a shim that includes the
+# selected sim's makefile, so the canonical `make all SV_CASE=...` still works.
 ```
 
 Generated APB / AHB / AXI4-Lite-slave agent mode may also include:
