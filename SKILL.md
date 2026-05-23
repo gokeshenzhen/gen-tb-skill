@@ -153,9 +153,12 @@ apb_vip_reuse_level: import_only   # or ahb_vip_reuse_level / axi_lite_vip_reuse
 `import_only` means scaffold imports the VIP into the compile tree and
 keeps built-in tests on `tb_api`. `drive_with_vip` means Phase 5 must
 also generate/adapt glue so the user's VIP can drive a minimal bus
-read/write smoke sequence. Do not guess third-party VIP APIs in Phase 4.
-For `import_only`, scaffold may skip vendor `*_test_pkg.sv` files that
-only serve the VIP's standalone harness.
+read/write smoke sequence — **not implemented in v1**; `scaffold.py`
+refuses `drive_with_vip` and the skill must default to `import_only`
+or hand-author the VIP-driven smoke test post-hoc. Do not guess
+third-party VIP APIs in Phase 4. For `import_only`, scaffold may skip
+vendor `*_test_pkg.sv` files that only serve the VIP's standalone
+harness.
 
 Load `references/apb_external_vip.md`, `references/ahb_external_vip.md`,
 or `references/axi_lite_external_vip.md` before implementing or fixing

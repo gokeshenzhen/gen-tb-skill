@@ -62,19 +62,25 @@ import yaml
 
 def _resolve_safely(target: Path, ip_root: Path) -> Path:
     """Return the resolved target path if it is inside ip_root.
-    Raises RuntimeError if the resolved path escapes."""
+    Raises RuntimeError if the resolved path escapes — including the
+    case where `target` itself is a symlink (possibly dangling) pointing
+    outside the root, not just when an ancestor directory is."""
     real_root = ip_root.resolve()
-    # Resolve the *parent* if the file does not yet exist
-    parent = target.parent
-    if not parent.exists():
-        # walk up to first existing ancestor
+    if target.exists() or target.is_symlink():
+        # Follow the entire chain on the target itself; .resolve() handles
+        # both regular files and (dangling) symlinks per pathlib semantics.
+        resolved = target.resolve()
+    else:
+        # File does not exist yet — resolve the deepest existing ancestor
+        # and re-append the not-yet-created tail. Symlinks in the ancestor
+        # chain are followed by .resolve(); a missing tail can't be a
+        # symlink, so nothing else to follow.
+        parent = target.parent
         check = parent
         while not check.exists() and check != check.parent:
             check = check.parent
         real_parent = check.resolve() / parent.relative_to(check)
-    else:
-        real_parent = parent.resolve()
-    resolved = real_parent / target.name
+        resolved = real_parent / target.name
     if not str(resolved).startswith(str(real_root) + os.sep) and resolved != real_root:
         raise RuntimeError(
             f"symlink guard: {target} resolves to {resolved}, outside {real_root}"
@@ -134,6 +140,19 @@ def _validate_intake(intake: dict) -> None:
     if "axi4_full_features" in intake and intake["axi4_full_features"] not in ("none", "present"):
         sys.exit("FATAL: axi4_full_features must be none|present "
                  f"(got {intake['axi4_full_features']!r})")
+    # Item 10: Python-DPI is documented as schema-only — scaffold has no
+    # py_dpi emitter, so accepting it would silently produce no working
+    # integration. Refuse it loudly at the boundary instead.
+    refm = intake.get("ref_model_language", "skip")
+    if refm == "py_dpi":
+        sys.exit(
+            "FATAL: ref_model_language: py_dpi is not implemented in v1 "
+            "(refm_dpi.md: 'scaffold will not emit it'). Use ref_model_language: "
+            "c_dpi or sv, or remove the ref model with skip."
+        )
+    if refm not in ("skip", "sv", "c_dpi"):
+        sys.exit(f"FATAL: unsupported ref_model_language: {refm!r} "
+                 "(allowed: skip|sv|c_dpi)")
     if bus == "generic":
         # External VIP reuse is not supported in generic mode.
         for key in ("generic_vip_source", "apb_vip_source", "ahb_vip_source", "axi_lite_vip_source"):
@@ -150,6 +169,17 @@ def _validate_intake(intake: dict) -> None:
         sys.exit(f"FATAL: unsupported {bus}_vip_reuse_level: {reuse_level!r}")
     if vip_source != "reuse_my_vip" and f"{bus}_vip_reuse_level" in intake:
         sys.exit(f"FATAL: {bus}_vip_reuse_level is valid only with reuse_my_vip")
+    # Item 9: drive_with_vip requires generated bridge + mandatory VIP
+    # read/write smoke test (SKILL.md "drive_with_vip" rule). v1 scaffold
+    # only ships the import_only path; refuse drive_with_vip rather than
+    # silently treat it as import-only and skip the required smoke test.
+    if reuse_level == "drive_with_vip":
+        sys.exit(
+            f"FATAL: {bus}_vip_reuse_level: drive_with_vip is not "
+            "implemented in v1 (no generated bridge / VIP smoke test). "
+            f"Use {bus}_vip_reuse_level: import_only, or hand-author the "
+            "VIP-driven smoke test against the imported VIP."
+        )
     if (
         bus in ("axi_lite", "ahb")
         and intake.get("bus_direction", "slave") == "master"
@@ -867,14 +897,18 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
         bus_inst = f"axi_lite_if #(.ADDR_W({addr_w}), .DATA_W(32)) axi (.aclk(aclk), .aresetn(aresetn));"
         axi_full_extra = ""
         if axi_full_signature:
-            axi_full_extra = (
-                ",\n            .awlen   (axi.awlen),   .awsize (axi.awsize)"
-                ",\n            .awburst (axi.awburst), .awid   (axi.awid)"
-                ",\n            .arlen   (axi.arlen),   .arsize (axi.arsize)"
-                ",\n            .arburst (axi.arburst), .arid   (axi.arid)"
-                ",\n            .bid     (axi.bid),     .rid    (axi.rid)"
-                ",\n            .wlast   (axi.wlast),   .rlast  (axi.rlast)"
-            )
+            # Only wire sidebands actually present on the DUT. The detector
+            # can fire on a single full-AXI signal; assuming all 12 sidebands
+            # exist would reference nonexistent ports on partial-shape DUTs.
+            # Fall back to the full set when discovery did not record the
+            # list (older rtl_discovery.yaml without `axi_full_signals`).
+            present = rtl.get("axi_full_signals")
+            if not present:
+                present = ["awlen", "awsize", "awburst", "awid",
+                           "arlen", "arsize", "arburst", "arid",
+                           "bid", "rid", "wlast", "rlast"]
+            extras = [f".{sig} (axi.{sig})" for sig in present]
+            axi_full_extra = ",\n            " + ",\n            ".join(extras)
         dut_bus = _build_dut_bus(rtl, "axi_lite", "axi", clk_name, rst_name) \
             + axi_full_extra
         config = textwrap.dedent("""\
@@ -3244,6 +3278,13 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: d
                 endtask
             endclass
             """)
+    elif not has_ral:
+        # Slave direction without RAL (generic + register_semantics: no):
+        # tb_api::expect_reg is not generated in this mode and there is no
+        # readable register to assert against, so SKILL.md Phase 6 specifies
+        # only <ip>_responder_smoke_test for this combination. Emit nothing
+        # for sanity here; sv_list also omits it.
+        sanity_test = ""
     else:
         sanity_test = textwrap.dedent(f"""\
             class {ip}_sanity_test extends uvm_test;
@@ -3409,14 +3450,20 @@ def emit_test_pkg(intake: dict, regs: list[dict], dpi: dict | None, handshake: d
         """)
 
 
-def emit_sv_list(ip: str, vip_source: str, has_ral: bool = True) -> str:
-    lines = [f"{ip}_sanity_test"]
-    if has_ral:
-        lines.append(f"{ip}_reg_access_test")
-        if vip_source == "generate_fresh":
-            lines.append(f"{ip}_random_seq_test")
-    else:
-        lines.append(f"{ip}_responder_smoke_test")
+def emit_sv_list(ip: str, vip_source: str, has_ral: bool = True,
+                 direction: str = "slave") -> str:
+    if not has_ral:
+        # SKILL.md Phase 6: register_semantics:no with slave direction runs
+        # ONLY <ip>_responder_smoke_test (sanity has nothing to assert —
+        # tb_api::expect_reg is not even generated in no-register mode).
+        # The master-direction lane keeps the alive-style sanity it has
+        # historically passed (see ahb-simple-master eval).
+        if direction == "slave":
+            return f"{ip}_responder_smoke_test\n"
+        return f"{ip}_sanity_test\n{ip}_responder_smoke_test\n"
+    lines = [f"{ip}_sanity_test", f"{ip}_reg_access_test"]
+    if vip_source == "generate_fresh":
+        lines.append(f"{ip}_random_seq_test")
     return "\n".join(lines) + "\n"
 
 
@@ -3768,7 +3815,8 @@ def main() -> int:
         plan.append((ip_root / "tb" / "dpi" / f"{ip}_dpi_proto.h", emit_dpi_proto_h(ip, dpi), False))
 
     plan.append((ip_root / "test" / f"{ip}_pkg.sv", emit_test_pkg(intake, regs, dpi, handshake), False))
-    plan.append((ip_root / "test" / "sv_list", emit_sv_list(ip, vip_source, has_ral), False))
+    plan.append((ip_root / "test" / "sv_list",
+                 emit_sv_list(ip, vip_source, has_ral, direction), False))
 
     # ---- Generic-mode audit artifact: prompt template for the scaffold sub-agent ----
     if bus == "generic":

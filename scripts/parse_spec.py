@@ -14,8 +14,15 @@ def _refmodel_decision(intake_yaml: Path | None) -> tuple[str, str, str]:
         return "skip", "spec_derived_basic", "heuristic"
     intake = yaml.safe_load(intake_yaml.read_text()) or {}
     language = intake.get("ref_model_language", "skip")
-    if language in {"c_dpi", "py_dpi", "sv"}:
+    # py_dpi is documented as schema-only in references/refm_dpi.md; the
+    # scaffold has no py_dpi emitter. Don't classify it as user_provided/
+    # golden — that misrepresents an unimplemented mode as accepted.
+    # _validate_intake refuses it before Phase 4 reaches us in practice;
+    # this guard keeps Phase 3 honest when called standalone.
+    if language in {"c_dpi", "sv"}:
         return language, "user_provided", "golden"
+    if language == "py_dpi":
+        return language, "unsupported", "not_implemented"
     return language, "spec_derived_basic", "heuristic"
 
 

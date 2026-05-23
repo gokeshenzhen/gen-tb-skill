@@ -84,6 +84,33 @@ def detect_axi_full(top_file: Path) -> tuple[bool, int]:
     return True, id_w
 
 
+# All full-AXI sideband signals that the degraded-mode top may need to wire.
+# The detector above can fire on any one of `_AXI_FULL_SIGNALS`; this list is
+# what scaffold.py actually consults when generating DUT connections, so we
+# must report *which* sidebands are present rather than assuming the full set.
+_AXI_FULL_PORT_ROLES = (
+    "awlen", "awsize", "awburst", "awid",
+    "arlen", "arsize", "arburst", "arid",
+    "bid", "rid", "wlast", "rlast",
+)
+
+
+def detect_axi_full_signals(top_file: Path) -> list[str]:
+    """Return the subset of `_AXI_FULL_PORT_ROLES` actually present on the
+    top module. Used by scaffold.py to wire only existing sidebands instead
+    of every full-AXI signal — partial-shape DUTs would otherwise fail
+    compile when the top references nonexistent ports."""
+    ports = _parse_ports(top_file)
+    present: list[str] = []
+    for canon in _AXI_FULL_PORT_ROLES:
+        for p in ports:
+            lp = p["name"].lower()
+            if lp == canon or _norm_port(p["name"]) == canon:
+                present.append(canon)
+                break
+    return present
+
+
 def candidate_signals(top_file: Path) -> list[str]:
     """For an unknown bus: the request/response-looking port group.
     Heuristic — any port whose name hints at a handshake or data path."""
@@ -308,7 +335,12 @@ def _port_line(role: str, matched: dict[str, dict]) -> str:
 def _ordered_rtl_files(rtl_files: list[Path], top: str, ip_root: Path) -> list[Path]:
     order = [path for path in rtl_files if path.stem != top]
     if top:
-        order.append(ip_root / "rtl" / f"{top}.v")
+        # Use the actual top file (.v or .sv) so a SystemVerilog top doesn't
+        # get a nonexistent `<top>.v` appended to design.f. Fall back to .v
+        # only when no matching file exists yet (stub-mode pre-generation).
+        top_path = next((p for p in rtl_files if p.stem == top), None)
+        order.append(top_path if top_path is not None
+                     else ip_root / "rtl" / f"{top}.v")
     return order
 
 
@@ -370,6 +402,8 @@ def render_rtl_discovery(
         if axi_full:
             lines.append("axi_full_signature: true")
             lines.append(f"axi_full_id_width: {id_w}")
+            present = detect_axi_full_signals(top_file)
+            lines.append("axi_full_signals: [" + ", ".join(present) + "]")
 
     if bus == "generic":
         # No standard interface section — bus details live in bus_handshake.yaml.
