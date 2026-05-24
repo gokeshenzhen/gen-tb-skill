@@ -2,9 +2,12 @@
 
 ![gen-tb workflow cover](assets/gen-tb-cover.png)
 
-A Claude Code skill that generates a complete UVM testbench scaffold for
-a single IP from its specification documents (docx / pdf / md) and
-register table (xlsx / csv / md / IP-XACT). Targets dual personas:
+A skill that generates a complete UVM testbench scaffold for a single IP
+from its specification documents (docx / pdf / md) and register table
+(xlsx / csv / md / IP-XACT). Runs under both **Claude Code** and
+**Codex CLI** (via the Codex Claude Code plugin / shared skill loader) —
+the 7-phase pipeline, scaffold scripts, and eval harness are
+host-agnostic. Targets dual personas:
 
 - **DV engineers** drive the tb with UVM sequences and `uvm_test`s.
 - **DE engineers** drive the tb through a thin `tb_api::` task-style BFM
