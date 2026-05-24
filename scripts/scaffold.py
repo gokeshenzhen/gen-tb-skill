@@ -1240,6 +1240,7 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
 
 module {ip}_tb_top;
     import uvm_pkg::*;
+    import {ip}_pkg::*;
     `include "uvm_macros.svh"
 
     // ---- clock & reset (top owns the drive) ----
