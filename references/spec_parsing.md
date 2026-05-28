@@ -89,6 +89,8 @@ Follow `references/registers_yaml_schema.md` exactly:
 
 - offsets are post-wrapper APB byte addresses
 - field-level reset values win over register-level reset values
+- normalize access strings before yaml emission: register `access` is
+  `RO`/`RW`/`WO`; field `access` is a canonical UVM 1.2 field policy
 - repeated offsets are legal for aliases or disjoint RO/WO pairs
 - never invent missing registers
 - preserve original register and field names when they are legal SV IDs

@@ -11,14 +11,14 @@ registers:
   - name: CTRL                  # SystemVerilog identifier (uppercase by convention)
     offset: 0x20                # post-wrapper PADDR byte offset (see "Offset semantics" below)
     width: 32                   # register width in bits; usually matches DATA_W
-    access: RW                  # RO | RW | WO  (register-level summary)
+    access: RW                  # RO | RW | WO  (register/map-level summary)
     reset: 0x00000000           # reset value; field-level wins on conflict (G8)
     aliased_by: null            # see "Address aliasing" below; null when not aliased
     array_of: null              # see "Register arrays" below; null when not an array
     fields:
       - name: init
         bits: "0"               # single bit
-        access: WO              # field-level access (often more restrictive than reg-level)
+        access: WO              # UVM 1.2 field access policy
         reset: 0x0
         desc: "1 = start key expansion"
       - name: keylen
@@ -32,6 +32,40 @@ registers:
 `registers` is a list. Each entry MUST have `name`, `offset`, `width`,
 `access`, `reset`, `fields`. The `aliased_by` / `array_of` / `enum`
 fields are optional.
+
+## Access normalization
+
+The parser must normalize spec-table access strings before writing
+`registers.yaml`; generated RAL passes these strings directly to UVM.
+
+Register-level `access` is a map-rights summary and MUST be one of
+`RO`, `RW`, or `WO`, because `uvm_reg_map::add_reg()` rights only use
+those three values. Field-level `access` may use any UVM 1.2
+predefined field policy:
+
+`RO`, `RW`, `RC`, `RS`, `WRC`, `WRS`, `WC`, `WS`, `WSRC`, `WCRS`,
+`W1C`, `W1S`, `W1T`, `W0C`, `W0S`, `W0T`, `W1SRC`, `W1CRS`,
+`W0SRC`, `W0CRS`, `WO`, `WOC`, `WOS`, `W1`, `WO1`.
+
+Common spec spellings must be canonicalized, including:
+
+| Spec spelling examples | YAML field access | YAML register access |
+|---|---:|---:|
+| `R`, `read`, `read only`, `read-only` | `RO` | `RO` |
+| `W`, `write`, `write only`, `write-only` | `WO` | `WO` |
+| `R/W`, `read-write`, `read write` | `RW` | `RW` |
+| `read clear`, `read-to-clear` | `RC` | `RO` |
+| `write 1 clear`, `write-one-to-clear` | `W1C` | `RW` |
+| `write 0 set`, `write-zero-to-set` | `W0S` | `RW` |
+| `write-only clear` | `WOC` | `WO` |
+
+If a register-level spec cell contains a UVM field policy such as
+`W1C`, preserve that policy for fields that inherit the register
+access, but derive the register-level summary as `RW`. After all
+fields are parsed, the register-level summary is recomputed from the
+field policies so mixed RO/WO/RW fields produce the narrowest legal
+map rights. Unsupported access strings fall back to the
+inherited/default access and must be reported in `parse_report.md`.
 
 ## Offset semantics (G22)
 

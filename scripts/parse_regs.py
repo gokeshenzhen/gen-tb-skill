@@ -54,6 +54,7 @@ class ParseReport:
         self.alias_decisions: list[str] = []
         self.array_folding: list[str] = []
         self.side_effects: list[str] = []
+        self.access_normalization: list[str] = []
         self.warnings: list[str] = []
 
     def write(self, path: Path) -> None:
@@ -66,6 +67,7 @@ class ParseReport:
             ("Alias decisions", self.alias_decisions),
             ("Array folding", self.array_folding),
             ("Side-effect inference", self.side_effects),
+            ("Access normalization", self.access_normalization),
             ("Reference model decision", [
                 "Register-level expected behavior belongs in the generated RAL/reg block."
             ]),
@@ -121,24 +123,180 @@ def _parse_int(value: Any, default: int | None = None) -> int:
     return int(text, 10)
 
 
-def _normalize_access(value: Any, default: str = "RW") -> str:
-    text = str(value or default).strip().upper().replace("-", "")
-    mapping = {
-        "R": "RO",
-        "READ": "RO",
-        "READONLY": "RO",
-        "W": "WO",
-        "WRITE": "WO",
-        "WRITEONLY": "WO",
-        "READWRITE": "RW",
-        "WRITEREAD": "RW",
-        "R/W": "RW",
-        "W/R": "RW",
-    }
-    text = mapping.get(text, text)
-    if text not in {"RO", "RW", "WO"}:
-        return default
-    return text
+UVM12_FIELD_ACCESSES = {
+    "RO", "RW", "RC", "RS", "WRC", "WRS", "WC", "WS", "WSRC", "WCRS",
+    "W1C", "W1S", "W1T", "W0C", "W0S", "W0T",
+    "W1SRC", "W1CRS", "W0SRC", "W0CRS",
+    "WO", "WOC", "WOS", "W1", "WO1",
+}
+
+WRITE_CAPABLE_FIELD_ACCESSES = {
+    "RW", "WRC", "WRS", "WC", "WS", "WSRC", "WCRS",
+    "W1C", "W1S", "W1T", "W0C", "W0S", "W0T",
+    "W1SRC", "W1CRS", "W0SRC", "W0CRS",
+    "WO", "WOC", "WOS", "W1", "WO1",
+}
+
+READ_CAPABLE_FIELD_ACCESSES = {
+    "RO", "RW", "RC", "RS", "WRC", "WRS", "WC", "WS", "WSRC", "WCRS",
+    "W1C", "W1S", "W1T", "W0C", "W0S", "W0T",
+    "W1SRC", "W1CRS", "W0SRC", "W0CRS", "W1",
+}
+
+ACCESS_ALIASES = {
+    "R": "RO",
+    "RD": "RO",
+    "RO": "RO",
+    "READ": "RO",
+    "READONLY": "RO",
+    "W": "WO",
+    "WO": "WO",
+    "WRITE": "WO",
+    "WRITEONLY": "WO",
+    "RW": "RW",
+    "WR": "RW",
+    "READWRITE": "RW",
+    "WRITEREAD": "RW",
+    "READWRITABLE": "RW",
+    "RC": "RC",
+    "READCLEAR": "RC",
+    "READCLEARS": "RC",
+    "READTOCLEAR": "RC",
+    "RS": "RS",
+    "READSET": "RS",
+    "READSETS": "RS",
+    "READTOSET": "RS",
+    "WC": "WC",
+    "WRITECLEAR": "WC",
+    "WRITECLEARS": "WC",
+    "WRITETOCLEAR": "WC",
+    "WS": "WS",
+    "WRITESET": "WS",
+    "WRITESETS": "WS",
+    "WRITETOSET": "WS",
+    "WRC": "WRC",
+    "WRITEREADCLEAR": "WRC",
+    "WRITEREADTOCLEAR": "WRC",
+    "WRS": "WRS",
+    "WRITEREADSET": "WRS",
+    "WRITEREADTOSET": "WRS",
+    "WSRC": "WSRC",
+    "WRITESETREADCLEAR": "WSRC",
+    "WRITESETREADTOCLEAR": "WSRC",
+    "WCRS": "WCRS",
+    "WRITECLEARREADSET": "WCRS",
+    "WRITECLEARREADTOSET": "WCRS",
+    "W1C": "W1C",
+    "WRITE1C": "W1C",
+    "WRITE1CLEAR": "W1C",
+    "WRITE1TOCLEAR": "W1C",
+    "WRITEONETOCLEAR": "W1C",
+    "WRITEONECLEAR": "W1C",
+    "W1S": "W1S",
+    "WRITE1S": "W1S",
+    "WRITE1SET": "W1S",
+    "WRITE1TOSET": "W1S",
+    "WRITEONETOSET": "W1S",
+    "WRITEONESET": "W1S",
+    "W1T": "W1T",
+    "WRITE1T": "W1T",
+    "WRITE1TOGGLE": "W1T",
+    "WRITE1TOTOGGLE": "W1T",
+    "WRITEONETOTOGGLE": "W1T",
+    "WRITEONETOGGLE": "W1T",
+    "W0C": "W0C",
+    "WRITE0C": "W0C",
+    "WRITE0CLEAR": "W0C",
+    "WRITE0TOCLEAR": "W0C",
+    "WRITEZEROTOCLEAR": "W0C",
+    "WRITEZEROCLEAR": "W0C",
+    "W0S": "W0S",
+    "WRITE0S": "W0S",
+    "WRITE0SET": "W0S",
+    "WRITE0TOSET": "W0S",
+    "WRITEZEROTOSET": "W0S",
+    "WRITEZEROSET": "W0S",
+    "W0T": "W0T",
+    "WRITE0T": "W0T",
+    "WRITE0TOGGLE": "W0T",
+    "WRITE0TOTOGGLE": "W0T",
+    "WRITEZEROTOTOGGLE": "W0T",
+    "WRITEZEROTOGGLE": "W0T",
+    "W1SRC": "W1SRC",
+    "WRITE1SETREADCLEAR": "W1SRC",
+    "WRITE1SETREADTOCLEAR": "W1SRC",
+    "W1CRS": "W1CRS",
+    "WRITE1CLEARREADSET": "W1CRS",
+    "WRITE1CLEARREADTOSET": "W1CRS",
+    "W0SRC": "W0SRC",
+    "WRITE0SETREADCLEAR": "W0SRC",
+    "WRITE0SETREADTOCLEAR": "W0SRC",
+    "W0CRS": "W0CRS",
+    "WRITE0CLEARREADSET": "W0CRS",
+    "WRITE0CLEARREADTOSET": "W0CRS",
+    "WOC": "WOC",
+    "WRITEONLYCLEAR": "WOC",
+    "WRITEONLYTOCLEAR": "WOC",
+    "WOS": "WOS",
+    "WRITEONLYSET": "WOS",
+    "WRITEONLYTOSET": "WOS",
+    "W1": "W1",
+    "WRITEONCE": "W1",
+    "WO1": "WO1",
+    "WRITEONLYONCE": "WO1",
+}
+
+
+def _access_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _normalize_field_access(
+    value: Any,
+    default: str = "RW",
+    report: ParseReport | None = None,
+    context: str = "access",
+) -> str:
+    raw = str(value or default).strip()
+    key = _access_key(raw)
+    default_key = _access_key(default)
+    canonical = ACCESS_ALIASES.get(key) or (
+        key if key in UVM12_FIELD_ACCESSES else None
+    )
+    if canonical is None:
+        fallback = ACCESS_ALIASES.get(default_key, "RW")
+        if report is not None:
+            report.warnings.append(
+                f"{context}: unsupported access {raw!r}; using {fallback}"
+            )
+        return fallback
+    if report is not None and key != canonical:
+        report.access_normalization.append(f"{context}: {raw!r} -> {canonical}")
+    return canonical
+
+
+def _access_to_map_right(access: str) -> str:
+    readable = access in READ_CAPABLE_FIELD_ACCESSES
+    writable = access in WRITE_CAPABLE_FIELD_ACCESSES
+    if readable and writable:
+        return "RW"
+    if readable:
+        return "RO"
+    if writable:
+        return "WO"
+    return "RO"
+
+
+def _fields_to_map_right(fields: list[dict]) -> str:
+    readable = any(f["access"] in READ_CAPABLE_FIELD_ACCESSES for f in fields)
+    writable = any(f["access"] in WRITE_CAPABLE_FIELD_ACCESSES for f in fields)
+    if readable and writable:
+        return "RW"
+    if readable:
+        return "RO"
+    if writable:
+        return "WO"
+    return "RO"
 
 
 def _normalize_bits(value: Any, width: int = 32) -> str:
@@ -354,11 +512,20 @@ def _row_to_reg(row: dict[str, Any], report: ParseReport) -> tuple[tuple[str, in
     width = _parse_int(row.get("width"), 32)
     name = _sv_id(row.get("name"), "REG")
     offset = _parse_int(row.get("offset"))
-    access = _normalize_access(row.get("access"))
+    source = row.get("_source", "row")
+    reg_field_access = _normalize_field_access(
+        row.get("access"), "RW", report, f"{source} {name}.access"
+    )
+    access = _access_to_map_right(reg_field_access)
     reset = _parse_int(row.get("reset"), 0)
     field_name = _sv_id(row.get("field_name"), "data")
     field_bits = _normalize_bits(row.get("field_bits"), width)
-    field_access = _normalize_access(row.get("field_access"), access)
+    field_access = _normalize_field_access(
+        row.get("field_access"),
+        reg_field_access,
+        report,
+        f"{source} {name}.{field_name}.access",
+    )
     # G8: field-level reset wins only when explicitly given. When the row
     # omits it, derive the field's reset by slicing the register-level reset
     # for this field's bit range — defaulting to 0 would turn an absent
@@ -414,6 +581,14 @@ def _collect_regs(rows: list[dict[str, Any]], report: ParseReport) -> list[dict]
                 if opt in reg and opt not in existing:
                     existing[opt] = reg[opt]
         regs[key]["fields"].append(field)
+    for reg in regs.values():
+        field_summary = _fields_to_map_right(reg["fields"])
+        if reg["access"] != field_summary:
+            report.access_normalization.append(
+                f"{reg['name']}@0x{reg['offset']:X}: register access summary "
+                f"{reg['access']} -> {field_summary} from fields"
+            )
+            reg["access"] = field_summary
     return list(regs.values())
 
 

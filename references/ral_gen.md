@@ -41,7 +41,7 @@ class <IP>_<REG>_reg extends uvm_reg;
             this,                  // parent reg
             <field.width>,         // bits
             <field.lsb>,           // lsb position
-            "<field.access>",      // "RO" | "RW" | "WO" — uvm names
+            "<field.access>",      // UVM 1.2 field access policy
             0,                     // volatile
             <field.reset>,         // reset value
             1,                     // has_reset
@@ -69,7 +69,7 @@ class <ip>_reg_block extends uvm_reg_block;
         CTRL = <IP>_CTRL_reg::type_id::create("CTRL");
         CTRL.configure(this, null, "");
         CTRL.build();
-        default_map.add_reg(CTRL, 12'h020, "RW");
+        default_map.add_reg(CTRL, 12'h020, "RW"); // RO | RW | WO map rights
         // ... more regs ...
         lock_model();
     endfunction
