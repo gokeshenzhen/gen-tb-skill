@@ -97,8 +97,12 @@ The canonical APB connection is:
 .<pslverr> (apb.pslverr)
 ```
 
-If the DUT lacks `pready` or `pslverr`, do not guess. Ask the user or
-record an explicit tie/default in `rtl_discovery.yaml` before scaffold.
+If the DUT lacks `pready` or `pslverr`, omit the corresponding
+`.<port>(...)` line and emit a tie at the interface side instead —
+`assign apb.pready = 1'b1;` (zero-wait-state) and/or
+`assign apb.pslverr = 1'b0;` (no-error). Detection is driven by
+`unmatched_roles` in `rtl_discovery.yaml`; the deterministic
+scaffolder handles this automatically in `_build_dut_bus`.
 
 ## DUT AHB Wiring
 

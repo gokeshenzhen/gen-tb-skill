@@ -474,13 +474,38 @@ def _dut_port_name(rtl: dict, bus: str, role: str) -> str:
     return role
 
 
+def _dut_port_present(rtl: dict, bus: str, role: str) -> bool:
+    """True if the DUT exposes this canonical bus role. Roles listed under
+    `unmatched_roles` in rtl_discovery.yaml were not found on the DUT and
+    should be tied off at the interface side rather than connected."""
+    section = rtl.get(f"{bus}_interface") or {}
+    unmatched = section.get("unmatched_roles") or []
+    return role not in unmatched
+
+
+# Roles that may be absent on a real DUT and have a safe protocol-idle tie-off
+# at the interface side. APB v1: zero-wait-state DUTs often omit `pready`, and
+# error-free slaves often omit `pslverr`. AHB/AXI handled separately.
+_BUS_OPTIONAL_TIES: dict[str, dict[str, str]] = {
+    "apb": {"pready": "1'b1", "pslverr": "1'b0"},
+}
+
+
 def _build_dut_bus(rtl: dict, bus: str, iface: str,
-                    clk_name: str, rst_name: str) -> str:
+                    clk_name: str, rst_name: str) -> tuple[str, str]:
     """DUT bus port connections — `.<exact RTL port>(<canonical iface sig>)`.
-    Clock/reset are wired to the top-driven signals, not the interface."""
+    Clock/reset are wired to the top-driven signals, not the interface.
+    Returns (connections, ties): connections is the comma-joined port list;
+    ties is a (possibly empty) block of `assign <iface>.<role> = <const>;`
+    statements for optional roles absent on the DUT."""
     clk_role, rst_role = _DUT_BUS_ROLES[bus][0], _DUT_BUS_ROLES[bus][1]
+    optional = _BUS_OPTIONAL_TIES.get(bus, {})
     lines = []
+    tie_lines = []
     for role in _DUT_BUS_ROLES[bus]:
+        if role in optional and not _dut_port_present(rtl, bus, role):
+            tie_lines.append(f"assign {iface}.{role} = {optional[role]};")
+            continue
         dut = _dut_port_name(rtl, bus, role)
         if role == clk_role:
             rhs = clk_name
@@ -489,7 +514,7 @@ def _build_dut_bus(rtl: dict, bus: str, iface: str,
         else:
             rhs = f"{iface}.{role}"
         lines.append(f".{dut} ({rhs})")
-    return ",\n".join(lines)
+    return ",\n".join(lines), "\n".join(tie_lines)
 
 
 def _reset_polarity(handshake: dict | None) -> str:
@@ -1241,13 +1266,13 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
 
     if bus == "apb":
         bus_inst = f"apb_if #(.ADDR_W({addr_w}), .DATA_W(32)) apb (.pclk(pclk), .presetn(presetn));"
-        dut_bus = _build_dut_bus(rtl, "apb", "apb", clk_name, rst_name)
+        dut_bus, bus_ties = _build_dut_bus(rtl, "apb", "apb", clk_name, rst_name)
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "apb_vif", apb);
             tb_api::set_vif(apb);""").rstrip()
     elif bus == "ahb":
         bus_inst = f"ahb_if #(.ADDR_W({addr_w}), .DATA_W(32)) ahb (.hclk(hclk), .hresetn(hresetn));"
-        dut_bus = _build_dut_bus(rtl, "ahb", "ahb", clk_name, rst_name)
+        dut_bus, bus_ties = _build_dut_bus(rtl, "ahb", "ahb", clk_name, rst_name)
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "ahb_vif", ahb);
             tb_api::set_vif(ahb);""").rstrip()
@@ -1269,6 +1294,7 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
         for name, _ in _generic_extra_ports(handshake):
             connects.append(f".{name}({prefix}_bus.{name})")
         dut_bus = ",\n            ".join(connects)
+        bus_ties = ""
         config = textwrap.dedent(f"""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "{prefix}_vif", {prefix}_bus);
             tb_api::set_vif({prefix}_bus);""").rstrip()
@@ -1295,14 +1321,18 @@ def emit_tb_top(intake: dict, rtl: dict, handshake: dict | None = None,
                 present = {r: r for r in raw}
             extras = [f".{name} (axi.{role})" for role, name in present.items()]
             axi_full_extra = ",\n            " + ",\n            ".join(extras)
-        dut_bus = _build_dut_bus(rtl, "axi_lite", "axi", clk_name, rst_name) \
-            + axi_full_extra
+        axi_dut_bus, bus_ties = _build_dut_bus(rtl, "axi_lite", "axi", clk_name, rst_name)
+        dut_bus = axi_dut_bus + axi_full_extra
         config = textwrap.dedent("""\
             uvm_config_db#(tb_api::vif_t)::set(null, "*", "axi_lite_vif", axi);
             tb_api::set_vif(axi);""").rstrip()
 
     dut_bus_block = textwrap.indent(dut_bus, "        ")
     config_block = textwrap.indent(config, "        ")
+    bus_ties_block = (
+        "\n    // ---- DUT-absent bus signals (tied to protocol-idle defaults) ----\n"
+        + textwrap.indent(bus_ties, "    ") + "\n"
+    ) if bus_ties else ""
     rst_polarity = _reset_polarity(handshake) if bus == "generic" else "low"
     rst_asserted = "1'b1" if rst_polarity == "high" else "1'b0"
     rst_released = "1'b0" if rst_polarity == "high" else "1'b1"
@@ -1323,7 +1353,7 @@ module {ip}_tb_top;
 
     // ---- interface ----
     {bus_inst}
-
+{bus_ties_block}
     // ---- non-bus DUT pad defaults ----
 {pad_decls_str}
 

@@ -242,8 +242,12 @@ names. Match common variants only for discovery:
 | `pslverr` | `PSLVERR`, `slverr`, `error` |
 
 If `pready` or `pslverr` is absent but the RTL is otherwise APB-like,
-ask the user before tying defaults. Do not infer missing error/ready
-behavior without an explicit answer.
+record them in `unmatched_roles` and proceed — scaffold ties the
+interface signal to the protocol-idle default (`pready = 1'b1` for
+zero-wait-state, `pslverr = 1'b0` for no-error) at the top level
+instead of wiring a DUT port. The driver/monitor/tb_api code is
+unchanged: `pready` being constantly high makes the wait-for-ready
+loops fall through after the standard two-phase APB cycle.
 
 ## AHB Port Discovery
 
