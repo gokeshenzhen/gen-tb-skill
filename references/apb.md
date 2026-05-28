@@ -125,6 +125,12 @@ class apb_monitor extends uvm_monitor;
 endclass
 ```
 
+If the DUT does not expose `pready` / `pslverr`, `top.sv` ties
+`apb.pready = 1'b1` / `apb.pslverr = 1'b0` at the interface side
+(see `references/top_sv.md`). The driver/monitor code above is
+unchanged — the `pready`-high wait falls through immediately,
+giving correct zero-wait-state APB timing.
+
 ## apb_agent.sv (canonical)
 
 ```systemverilog

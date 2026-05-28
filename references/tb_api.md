@@ -94,6 +94,9 @@ endfunction
 //                  deasserting. The extra cycle prevents a back-to-back
 //                  read from sampling the previous transaction's
 //                  registered prdata path (this bit us in uart16550).
+// DUTs without a pready port: top.sv ties apb.pready = 1'b1 (see
+// references/top_sv.md), so the wait below falls through after the
+// standard two-phase APB cycle. This task is unchanged.
 task automatic write(input logic [ADDR_W-1:0] addr,
                      input logic [DATA_W-1:0] data);
     _require_vif();
