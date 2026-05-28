@@ -14,6 +14,7 @@ Reads (relative to <ip-root>):
 Writes:
     .prj_top
     script/{makefile, setup.sh, check_env.sh, design.f, tb.f}
+    script/setup.csh                                  # if emit_setup_csh
     top/<ip>_tb_top.sv
     tb/<bus>_if.sv
     tb/<bus>_agt_top/{<bus>_agent.sv, <bus>_agt_config.sv, <bus>_trans.sv,
@@ -131,6 +132,15 @@ def _yesno(value: Any, key: str) -> str:
     sys.exit(f"FATAL: {key} must be yes|no (got {value!r})")
 
 
+def _bool_field(value: Any, key: str) -> bool:
+    """Accept YAML bool or common explicit strings for optional booleans."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in ("true", "false", "yes", "no"):
+        return value.lower() in ("true", "yes")
+    sys.exit(f"FATAL: {key} must be true|false (got {value!r})")
+
+
 def _validate_intake(intake: dict) -> None:
     required = ["ip_name", "bus_protocol", "ref_model_language", "uvm_version"]
     missing = [k for k in required if k not in intake]
@@ -155,6 +165,8 @@ def _validate_intake(intake: dict) -> None:
             sys.exit("FATAL: bus_direction for generic mode lives in bus_handshake.yaml, not intake.yaml")
     if "register_semantics" in intake:
         intake["register_semantics"] = _yesno(intake["register_semantics"], "register_semantics")
+    if "emit_setup_csh" in intake:
+        intake["emit_setup_csh"] = _bool_field(intake["emit_setup_csh"], "emit_setup_csh")
     if "axi4_full_features" in intake and intake["axi4_full_features"] not in ("none", "present"):
         sys.exit("FATAL: axi4_full_features must be none|present "
                  f"(got {intake['axi4_full_features']!r})")
@@ -611,6 +623,67 @@ def emit_setup_sh(sims: list[str] | None = None) -> str:
         echo "WORK_DIR=$WORK_DIR"
         echo "UVM_HOME=$UVM_HOME"
         echo "setup done"
+        """)
+
+
+def emit_setup_csh(sims: list[str] | None = None) -> str:
+    sims = sims or ["vcs"]
+    fallbacks: list[str] = []
+    if "vcs" in sims:
+        fallbacks.append(textwrap.dedent("""\
+            if ( ! $?UVM_HOME ) then
+                if ( $?VCS_HOME ) then
+                    setenv UVM_HOME "$VCS_HOME/etc/uvm-1.2"
+                endif
+            endif
+            """).rstrip())
+    if "questa" in sims:
+        fallbacks.append(textwrap.dedent("""\
+            if ( ! $?UVM_HOME ) then
+                if ( $?QUESTA_HOME ) then
+                    if ( -d "$QUESTA_HOME/verilog_src/uvm-1.2" ) then
+                        setenv UVM_HOME "$QUESTA_HOME/verilog_src/uvm-1.2"
+                    endif
+                endif
+            endif
+            """).rstrip())
+    fallback_block = "\n".join(fallbacks)
+    if fallback_block:
+        fallback_block += "\n"
+    return textwrap.dedent("""\
+        #!/bin/tcsh
+        # gen-tb generated. tcsh/csh variant of setup.sh.
+        # Walks up to find .prj_top, sets PROJ_DIR / WORK_DIR / UVM_HOME.
+        set prj_top = ".prj_top"
+        set cur_dir = "$cwd"
+        set found_prj_top = 0
+
+        while ( "$cwd" != "/" )
+            if ( -e "$prj_top" ) then
+                setenv PROJ_DIR "$cwd"
+                echo "PROJ_DIR=$PROJ_DIR"
+                set found_prj_top = 1
+                break
+            endif
+            cd ..
+        end
+
+        cd "$cur_dir"
+
+        if ( $found_prj_top == 0 ) then
+            echo "FATAL: .prj_top not found while walking up from $cur_dir"
+        else
+            setenv WORK_DIR "$PROJ_DIR/work"
+            mkdir -p "$WORK_DIR"
+        """) + textwrap.indent(fallback_block, "    ") + textwrap.dedent("""\
+            echo "WORK_DIR=$WORK_DIR"
+            if ( $?UVM_HOME ) then
+                echo "UVM_HOME=$UVM_HOME"
+            else
+                echo "UVM_HOME="
+            endif
+            echo "setup done"
+        endif
         """)
 
 
@@ -3904,6 +3977,7 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
         f"- Bus VIP source: `{vip_source}`",
         f"- External VIP reuse level: `{reuse_disp}`",
         f"- Reference model: `{refm}`",
+        f"- CSH/TCSH setup helper: `{'enabled' if intake.get('emit_setup_csh', False) else 'disabled'}`",
         "",
         "## Commands",
         "",
@@ -3928,6 +4002,32 @@ def emit_claude_md(ip: str, intake: dict, rtl: dict, handshake: dict | None,
     lines += [
         "```",
         "",
+    ]
+    if intake.get("emit_setup_csh", False):
+        lines += [
+            "For tcsh/csh users:",
+            "",
+            "```tcsh",
+            f"cd {ip}/script",
+            "source setup.csh",
+            f"{make_prefix} comp",
+        ]
+        lines += [f"{make_prefix} all SV_CASE={t}" for t in tests]
+        if "vcs" in sims:
+            alt_specs = _sim_makefile_specs()
+            for sim in sims:
+                if sim == "vcs":
+                    continue
+                alt_fname = alt_specs[sim][0]
+                lines += [
+                    f"# Switch to {sim} instead:",
+                    f"make -f {alt_fname} all SV_CASE={tests[0]}",
+                ]
+        lines += [
+            "```",
+            "",
+        ]
+    lines += [
         "## Important Files",
         "",
         "- `work/_gen_audit/intake.yaml`",
@@ -4083,6 +4183,8 @@ def main() -> int:
 
     plan.append((ip_root / ".prj_top", "", False))
     plan.append((ip_root / "script" / "setup.sh", emit_setup_sh(sims), True))
+    if intake.get("emit_setup_csh", False):
+        plan.append((ip_root / "script" / "setup.csh", emit_setup_csh(sims), True))
     plan.append((ip_root / "script" / "check_env.sh", emit_check_env_sh(sims), True))
     plan.append((ip_root / "script" / "design.f", emit_design_f(rtl), False))
     plan.append((ip_root / "script" / "tb.f", emit_tb_f(ip, has_dpi, bus, vip_source, has_ral, handshake), False))
@@ -4248,6 +4350,7 @@ def main() -> int:
         "scaffold_version": "v1.5",
         "bus_protocol": bus,
         "register_semantics": effective_reg_sem,
+        "emit_setup_csh": bool(intake.get("emit_setup_csh", False)),
     }
     if axi_full_signature:
         audit_doc["axi_full_signature"] = True
@@ -4283,6 +4386,8 @@ def main() -> int:
     print(f"scaffold complete: {len(written)} files written")
     print(f"audit: {audit_out}")
     print(f"next: cd {ip_root}/script && source setup.sh && make all SV_CASE={ip}_sanity_test")
+    if intake.get("emit_setup_csh", False):
+        print(f"tcsh/csh: cd {ip_root}/script && source setup.csh && make all SV_CASE={ip}_sanity_test")
     return 0
 
 

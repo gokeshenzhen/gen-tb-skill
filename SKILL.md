@@ -238,6 +238,11 @@ Fields to ask about when not already pinned by Phase 1:
   manually. Recommended user-facing wording:
   *"Which simulators should I generate makefiles for? VCS / Questa /
   xrun (multi-select; default VCS)."*
+- **tcsh/csh setup helper**: default no. If the user uses tcsh/csh,
+  record `emit_setup_csh: true` in `intake.yaml`; scaffold still emits
+  `script/setup.sh` and additionally emits `script/setup.csh`. Do not
+  infer this from `$SHELL`; generated trees may be used by other users
+  or CI shells.
 - address width: `paddr_width`, `haddr_width`, or `axi_addr_width`, default 12
 - endianness for multi-word arrays
 - coverage: enabled or skipped
@@ -337,6 +342,8 @@ Key scaffold rules:
 - write `script/design.f`, not `rtl/design.f`
 - write lowercase `script/makefile`
 - write `script/tb.f` for tb-side sources
+- always write bash-compatible `script/setup.sh`; when
+  `emit_setup_csh: true`, also write `script/setup.csh`
 - never copy or modify user RTL
 - if `<bus>_vip_source: generate_fresh`, emit `tb/<bus>_agt_top/`
 - if `reuse_my_vip`, emit `tb/external_vip.f` and skip fresh agent files
@@ -516,6 +523,15 @@ cd <ip>/script && source setup.sh && make -f makefile_questa all SV_CASE=<ip>_sa
 
 # xrun (when xrun is in simulators; with vcs also selected, either works)
 cd <ip>/script && source setup.sh && make -f makefile_xrun all SV_CASE=<ip>_sanity_test
+```
+
+If `intake.yaml` has `emit_setup_csh: true`, also show the tcsh/csh
+variant:
+
+```tcsh
+cd <ip>/script
+source setup.csh
+make all SV_CASE=<ip>_sanity_test
 ```
 
 Load `references/generated_claude_md.md` for `CLAUDE.md`.

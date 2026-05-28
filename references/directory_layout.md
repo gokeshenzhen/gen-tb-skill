@@ -18,6 +18,7 @@
 │   ├── makefile_questa                   (optional) Questa vlog/vsim flow, when intake.yaml lists `questa`
 │   ├── makefile_xrun                     (optional) Cadence xrun flow, when intake.yaml lists `xrun`
 │   ├── setup.sh                          walks to .prj_top; exports PROJ_DIR + WORK_DIR + UVM_HOME
+│   ├── setup.csh                         optional tcsh/csh variant when intake.yaml sets `emit_setup_csh: true`
 │   ├── check_env.sh                      validates the selected SIM (vcs|questa|xrun) + PROJ_DIR pre-compile
 │   ├── design.f                          DUT filelist; uses $PROJ_DIR/<actual-rtl-dir>
 │   ├── tb.f                              tb-side filelist + incdirs (decouples from makefile)
@@ -69,6 +70,7 @@
 | `.prj_top` | yes (empty) | idempotent | no (don't edit) |
 | `script/makefile` | yes | yes | no (edit intake.yaml + re-scaffold) |
 | `script/setup.sh` | yes | yes | host-tweaks: edit, but rerunning will overwrite |
+| `script/setup.csh` | optional (`emit_setup_csh`) | yes, when enabled | host-tweaks: edit, but rerunning will overwrite |
 | `script/check_env.sh` | yes | yes | no |
 | `script/design.f` | yes | yes (from rtl_discovery.yaml) | no |
 | `script/tb.f` | yes | yes | no |

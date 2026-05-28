@@ -57,6 +57,7 @@ not a golden implementation.
 - External VIP reuse level: `<import_only | drive_with_vip | n/a>`
 - Reference model: `<skip | sv | c_dpi | py_dpi>`
 - Reference model source/trust: `<user_provided/spec_derived_basic/stub_only>` / `<golden/heuristic/interface_only>`
+- CSH/TCSH setup helper: `<enabled | disabled>`
 
 ## Commands
 
@@ -71,6 +72,16 @@ make all SV_CASE=<ip>_reg_access_test
 #   make -f makefile_xrun   all SV_CASE=<ip>_sanity_test
 # When vcs is not selected, `script/makefile` is a shim that includes the
 # selected sim's makefile, so the canonical `make all SV_CASE=...` still works.
+```
+
+When `emit_setup_csh: true`, also include:
+
+```tcsh
+cd <ip>/script
+source setup.csh
+make comp
+make all SV_CASE=<ip>_sanity_test
+make all SV_CASE=<ip>_reg_access_test
 ```
 
 Generated APB / AHB / AXI4-Lite-slave agent mode may also include:

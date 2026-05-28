@@ -85,7 +85,7 @@ The skill always materializes the same directory shape (modeled on
 <ip>/
 ├── .prj_top
 ├── rtl/         # Either user RTL discovered in place, or a stub.
-├── script/      # makefile, setup.sh, check_env.sh
+├── script/      # makefile, setup.sh, optional setup.csh, check_env.sh
 ├── tb/          # UVM env, agents, scoreboard, RAL, ref_model, tb_api
 ├── test/        # uvm_test classes, sv_list, pkg
 ├── top/         # tb_top.sv, assertions
