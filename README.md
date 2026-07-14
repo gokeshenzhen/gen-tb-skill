@@ -2,7 +2,7 @@
 
 ![gen-tb workflow cover](assets/gen-tb-cover.png)
 
-A skill that generates a complete UVM testbench scaffold for a single IP
+a skill that generates a complete UVM testbench scaffold for a single IP
 from its specification documents (docx / pdf / md) and register table
 (xlsx / csv / md / IP-XACT). Runs under both **Claude Code** and
 **Codex CLI** (via the Codex Claude Code plugin / shared skill loader) —
